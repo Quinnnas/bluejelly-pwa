@@ -16,11 +16,15 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      injectRegister: false, // we register manually in main.jsx to force a reload on update
       includeAssets: ["icons/favicon-32.png", "icons/apple-touch-icon.png"],
       manifest: false, // we ship public/manifest.webmanifest directly
       workbox: {
         globPatterns: ["**/*.{js,css,html,png,svg,woff2}"],
         navigateFallback: "/index.html",
+        cleanupOutdatedCaches: true,   // deletes stale caches left by previous deploys
+        clientsClaim: true,            // new service worker takes control immediately
+        skipWaiting: true,             // don't wait for old tabs to close before activating
       },
       devOptions: { enabled: true },
     }),
