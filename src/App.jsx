@@ -38,6 +38,10 @@ import {
   Home,
   ExternalLink,
   Search,
+  Briefcase,
+  DollarSign,
+  ChevronDown,
+  ArrowDownRight,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -186,6 +190,54 @@ const ORDERS = [
   { id: "217569409", date: "09 Jul", time: "09:46", title: "ElfBar Premium 16000 Puffs Disposable Pod Kit — Pomegranate Blast", unit: 302, qty: 1, status: "leadtime", sku: "EFB16KKIT0", tsin: "95220417", offerId: "219884301", orderItemId: "429610255", customer: "Amara Botha", orderDC: "JHB", customerDC: "JHB", productCost: 205, deliveryCost: 2, fees: { success: 0, fulfillment: 0, courier: 0, stockTransfer: 0 } },
 ];
 const vat = (v, incl) => (incl ? v : Math.round(v / 1.15));
+
+// ── Sales Ops (AI Sales Optimization Manager) ──────────────────────────
+// Recommend-only: nothing here changes Takealot automatically. The owner
+// reviews each recommendation and explicitly Approves or Dismisses it.
+const SO = {
+  bg: "#0B0B0D", surface: "#18191D", surfaceAlt: "#232428",
+  border: "rgba(255,255,255,0.08)",
+  text: "#F5F5F6", textMuted: "#AEAEB2", textFaint: "#8E8E93", textFainter: "#6C6C70",
+  gold: "#E5A94B", goldLight: "#E8B563",
+  green: "#34C759", greenLight: "#5FD97C",
+  red: "#FF453A", redLight: "#FF6961",
+};
+const SO_URGENCY_COLOR = { high: SO.red, medium: SO.gold, low: SO.green };
+
+const SALES_OPS_RECS = [
+  {
+    id: "r1", type: "price", sku: "ELF-EW9K-WML", family: "Elf Bar EW9000 — Watermelon",
+    confidence: 92, urgency: "high",
+    current: { price: 315, margin: 22.1 }, proposed: { price: 305, margin: 18.4 },
+    signal: "Competitor Buy Box dropped to R305 three days ago — you've lost the Buy Box on 61% of sessions since.",
+    impact: "+14 est. units/wk",
+    reasoning: "Price elasticity for this SKU family is high. Matching the Buy Box at R305 wins it back while keeping margin above your R290 floor.",
+  },
+  {
+    id: "r2", type: "stock", sku: "VAAL-30-MNT", family: "Vaal Salt 30ml — Menthol Ice",
+    confidence: 88, urgency: "high",
+    current: { stock: 9, daysCover: 2 }, proposed: { reorderQty: 220, reorderBy: "24 Jul" },
+    signal: "Sell-through accelerated after last week's price cut. Current stock covers ~2 days at the new velocity.",
+    impact: "Avoid ~R18,400 lost sales",
+    reasoning: "Lead time from supplier is 4 days (1 day dispatch + 3 days transit). Ordering by 24 Jul keeps a safety buffer instead of stocking out.",
+  },
+  {
+    id: "r3", type: "price", sku: "DISP-XL-ICE", family: "Disposable XL — Ice",
+    confidence: 76, urgency: "medium",
+    current: { price: 149, margin: 26.0 }, proposed: { price: 154, margin: 27.6 },
+    signal: "You've held the #1 Buy Box spot for 11 straight days with no rank drop at current price.",
+    impact: "+R5.00/unit margin, no est. volume loss",
+    reasoning: "No competitor has matched your price in 11 days. A small upward test captures margin with low risk to Buy Box position.",
+  },
+  {
+    id: "r4", type: "stock", sku: "COIL-06-5PK", family: "Pod Coils 0.6Ω (5-pack)",
+    confidence: 64, urgency: "low",
+    current: { stock: 51, daysCover: 41 }, proposed: { reorderQty: 0, reorderBy: "Hold" },
+    signal: "Sell-through slowed over the last 3 weeks. Current stock covers 41 days — well above target.",
+    impact: "Avoid overstock / tied-up capital",
+    reasoning: "No reorder needed this cycle. Consider a small promo push if cover exceeds 60 days.",
+  },
+];
 
 const OFFER_STATUS = {
   buyable: { label: "Buyable", color: "#25D366" },
@@ -362,6 +414,14 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [reportOpen, setReportOpen] = useState(false);
   const [reportGen, setReportGen] = useState(false);
   const [buyBoxOpen, setBuyBoxOpen] = useState(false);
+  const [salesOpsOpen, setSalesOpsOpen] = useState(false);
+  const [salesOpsFilter, setSalesOpsFilter] = useState("all");
+  const [salesOpsDecisions, setSalesOpsDecisions] = useState({});
+  const salesOpsDecide = (id, decision) => setSalesOpsDecisions((p) => ({ ...p, [id]: decision }));
+  const salesOpsFiltered = salesOpsFilter === "all" ? SALES_OPS_RECS : SALES_OPS_RECS.filter((r) => r.type === salesOpsFilter);
+  const salesOpsPending = SALES_OPS_RECS.filter((r) => !salesOpsDecisions[r.id]).length;
+  const salesOpsHighUrgentPending = SALES_OPS_RECS.filter((r) => r.urgency === "high" && !salesOpsDecisions[r.id]).length;
+  const salesOpsApprovedToday = Object.values(salesOpsDecisions).filter((d) => d === "approved").length;
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [offersOpen, setOffersOpen] = useState(false);
   const [offerDetail, setOfferDetail] = useState(null);
@@ -459,6 +519,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { label: "Orders", icon: Package },
     { label: "Offers", icon: Tag },
     { label: "Reconciliation", icon: FileText },
+    { label: "Sales Ops", icon: Briefcase },
     { label: "Buy Box Tracking", icon: Crosshair },
     { label: "Reports", icon: BarChart3, children: ["Stock Replenishment", "Weekly Report", "Monthly Report"] },
     { label: "Automations", icon: Zap },
@@ -745,9 +806,12 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 );
               }
               return (
-                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
+                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
                   <Icon size={20} strokeWidth={2} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
                   {m.label}
+                  {m.label === "Sales Ops" && salesOpsPending > 0 && (
+                    <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "#0B0B0D", background: "#E5A94B", borderRadius: 999, padding: "2px 7px", ...NUM }}>{salesOpsPending}</span>
+                  )}
                   {active && <span style={{ marginLeft: "auto", width: 7, height: 7, borderRadius: 4, background: WA }} />}
                 </button>
               );
@@ -1325,6 +1389,62 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           );
         })()}
 
+        {/* Sales Ops — AI Sales Optimization Manager (recommend-only) */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 71, background: SO.bg, transform: salesOpsOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
+          <style>{"@keyframes ping{75%,100%{transform:scale(2.2);opacity:0}}"}</style>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 18px 4px" }}>
+            <button onClick={() => setSalesOpsOpen(false)} style={{ width: 38, height: 38, borderRadius: 19, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <ChevronLeft size={20} color="#fff" strokeWidth={2.4} />
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 7, height: 7, borderRadius: "9999px", backgroundColor: SO.green, boxShadow: "0 0 8px 2px rgba(52,199,89,0.5)" }} />
+              <span style={{ fontSize: 10.5, letterSpacing: 1.6, textTransform: "uppercase", color: SO.textFainter, fontWeight: 600 }}>BlueJelly · Optimizer</span>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 40px" }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: SO.text, marginTop: 6, marginBottom: 4, letterSpacing: "-0.3px" }}>Sales Optimization Manager</h1>
+            <p style={{ fontSize: 12.5, color: SO.textFaint, marginBottom: 20, lineHeight: 1.5 }}>
+              {salesOpsPending} recommendation{salesOpsPending !== 1 ? "s" : ""} awaiting your review · nothing changes without approval
+            </p>
+
+            {/* Summary strip */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
+              <div style={{ borderRadius: 12, border: "1px solid " + SO.border, backgroundColor: SO.surface, padding: 12 }}>
+                <p style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.8, color: SO.textFainter, marginBottom: 6 }}>Pending</p>
+                <p style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px", color: SO.text, margin: 0, ...NUM }}>{salesOpsPending}</p>
+              </div>
+              <div style={{ borderRadius: 12, border: "1px solid " + SO.border, backgroundColor: SO.surface, padding: 12 }}>
+                <p style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.8, color: SO.textFainter, marginBottom: 6 }}>High urgency</p>
+                <p style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px", color: SO.redLight, margin: 0, ...NUM }}>{salesOpsHighUrgentPending}</p>
+              </div>
+              <div style={{ borderRadius: 12, border: "1px solid " + SO.border, backgroundColor: SO.surface, padding: 12 }}>
+                <p style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.8, color: SO.textFainter, marginBottom: 6 }}>Approved today</p>
+                <p style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px", color: SO.goldLight, margin: 0, ...NUM }}>{salesOpsApprovedToday}</p>
+              </div>
+            </div>
+
+            {/* Filter tabs */}
+            <div style={{ display: "flex", gap: 4, marginBottom: 16, padding: 4, borderRadius: 10, backgroundColor: SO.surface, border: "1px solid " + SO.border, width: "fit-content" }}>
+              {[["all", "All"], ["price", "Pricing"], ["stock", "Stock"]].map(([k, lbl]) => (
+                <button key={k} onClick={() => setSalesOpsFilter(k)} style={{ padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, border: "none", cursor: "pointer", fontFamily: FONT, backgroundColor: salesOpsFilter === k ? SO.surfaceAlt : "transparent", color: salesOpsFilter === k ? SO.text : SO.textFaint }}>{lbl}</button>
+              ))}
+            </div>
+
+            {/* Cards */}
+            <div>
+              {salesOpsFiltered.map((rec) => (
+                <SalesOpsCard key={rec.id} rec={rec} decided={salesOpsDecisions[rec.id]} onDecide={salesOpsDecide} />
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 24, fontSize: 11.5, color: SO.textFainter, lineHeight: 1.5 }}>
+              <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              Recommendations are generated from your Takealot sales data on a scheduled scan. Approving queues the change for the next sync — it does not update Takealot instantly.
+            </div>
+          </div>
+        </div>
+
         {/* Buy Box Tracking page */}
         <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: buyBoxOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 18px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
@@ -1594,6 +1714,94 @@ function InfoRow({ label, value, color, bold, top }) {
 
 const authInput = { width: "100%", padding: "14px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "#fff", fontSize: 15, fontFamily: FONT, outline: "none", boxSizing: "border-box" };
 const authLabel = { fontSize: 12.5, fontWeight: 600, color: "rgba(255,255,255,0.55)", marginBottom: 7, display: "block" };
+
+function PulseDot({ urgency }) {
+  const color = SO_URGENCY_COLOR[urgency];
+  return (
+    <span style={{ position: "relative", display: "inline-flex", height: 9, width: 9 }}>
+      <span style={{ position: "absolute", display: "inline-flex", height: "100%", width: "100%", borderRadius: "9999px", backgroundColor: color, opacity: 0.5, animation: "ping 1.6s cubic-bezier(0,0,0.2,1) infinite" }} />
+      <span style={{ position: "relative", display: "inline-flex", height: 9, width: 9, borderRadius: "9999px", backgroundColor: color }} />
+    </span>
+  );
+}
+
+function SalesOpsCard({ rec, onDecide, decided }) {
+  const [open, setOpen] = useState(false);
+  const color = SO_URGENCY_COLOR[rec.urgency];
+  const isPrice = rec.type === "price";
+  return (
+    <div style={{ borderRadius: 14, border: "1px solid " + SO.border, backgroundColor: SO.surface, transition: "opacity 0.3s ease", opacity: decided ? 0.4 : 1, marginBottom: 12 }}>
+      <div style={{ padding: 16, display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, paddingTop: 4 }}>
+          <PulseDot urgency={rec.urgency} />
+          <div style={{ flex: 1, width: 1, backgroundColor: color, opacity: 0.3 }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 10.5, letterSpacing: 0.5, color: SO.textFainter, margin: 0, ...NUM }}>{rec.sku}</p>
+              <h3 style={{ fontSize: 14.5, fontWeight: 600, color: SO.text, marginTop: 4, marginBottom: 0 }}>{rec.family}</h3>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, marginTop: 2 }}>
+              {isPrice ? <DollarSign size={13} color={SO.gold} /> : <Package size={13} color={SO.gold} />}
+              <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 1, color: SO.gold }}>{isPrice ? "Pricing" : "Stock"}</span>
+            </div>
+          </div>
+
+          <p style={{ fontSize: 12.5, color: SO.textMuted, marginTop: 10, marginBottom: 0, lineHeight: 1.5 }}>{rec.signal}</p>
+
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 18, marginTop: 14, fontSize: 12.5, flexWrap: "wrap" }}>
+            {isPrice ? (
+              <>
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>CURRENT</span><span style={{ color: SO.text, fontWeight: 600, ...NUM }}>{rand(rec.current.price)}</span></div>
+                <ArrowDownRight size={13} color={SO.textFainter} style={{ marginBottom: 3 }} />
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>PROPOSED</span><span style={{ color: SO.goldLight, fontWeight: 600, ...NUM }}>{rand(rec.proposed.price)}</span></div>
+                <div style={{ marginLeft: "auto", textAlign: "right" }}><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>MARGIN</span><span style={{ color: SO.text, ...NUM }}>{rec.current.margin}% → {rec.proposed.margin}%</span></div>
+              </>
+            ) : (
+              <>
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>STOCK</span><span style={{ color: SO.text, ...NUM }}>{rec.current.stock} units · {rec.current.daysCover}d cover</span></div>
+                <ArrowUpRight size={13} color={SO.textFainter} style={{ marginBottom: 3 }} />
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>REORDER</span><span style={{ color: SO.goldLight, ...NUM }}>{rec.proposed.reorderQty > 0 ? `${rec.proposed.reorderQty} units by ${rec.proposed.reorderBy}` : "Hold"}</span></div>
+              </>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}>
+            <button onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: SO.textFaint, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: FONT }}>
+              Why this recommendation
+              <ChevronDown size={13} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+            </button>
+            <span style={{ fontSize: 11, color }}>{rec.confidence}% confidence</span>
+          </div>
+
+          {open && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + SO.border, fontSize: 12.5, color: SO.textMuted, lineHeight: 1.55 }}>
+              {rec.reasoning}
+              <div style={{ marginTop: 8, color: SO.goldLight, fontSize: 12 }}>{rec.impact}</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {!decided ? (
+        <div style={{ display: "flex", borderTop: "1px solid " + SO.border }}>
+          <button onClick={() => onDecide(rec.id, "rejected")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 0", fontSize: 13, color: SO.textFaint, background: "none", border: "none", cursor: "pointer", borderBottomLeftRadius: 14, fontFamily: FONT }}>
+            <X size={14} /> Dismiss
+          </button>
+          <div style={{ width: 1, backgroundColor: SO.border }} />
+          <button onClick={() => onDecide(rec.id, "approved")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 0", fontSize: 13, color: SO.goldLight, background: "none", border: "none", cursor: "pointer", borderBottomRightRadius: 14, fontFamily: FONT }}>
+            <Check size={14} /> Approve
+          </button>
+        </div>
+      ) : (
+        <div style={{ borderTop: "1px solid " + SO.border, padding: "10px 0", textAlign: "center", fontSize: 12, color: SO.textFainter }}>
+          {decided === "approved" ? "Approved — queued for next sync" : "Dismissed"}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AuthGate({ onComplete }) {
   const [mode, setMode] = useState("signin"); // signin | signup | apikey
