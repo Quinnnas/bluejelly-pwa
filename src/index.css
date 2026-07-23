@@ -37,3 +37,13 @@ input, textarea {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* Hide the visible scrollbar track everywhere in the app — scrolling still
+   works normally, it just doesn't show a bar, matching how a real mobile
+   app never shows scrollbar chrome. */
+* {
+  scrollbar-width: none; /* Firefox */
+}
+*::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Edge */
+}
