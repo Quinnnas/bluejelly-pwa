@@ -6,9 +6,6 @@ import {
   Copy,
   Check,
   MessageCircle,
-  Signal,
-  Wifi,
-  BatteryFull,
   ArrowUpRight,
   LayoutGrid,
   Package,
@@ -611,22 +608,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   return (
     <div style={{ height: "100%", background: "#D9DCE1", display: "flex", justifyContent: "center", fontFamily: FONT }}>
       <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
-      <div style={{ width: "100%", maxWidth: 430, background: INK, height: "100%", position: "relative", boxShadow: "0 0 80px rgba(0,0,0,0.14)", display: "flex", flexDirection: "column", overflowY: "auto", overscrollBehavior: "none", WebkitOverflowScrolling: "touch" }}>
+      <div style={{ width: "100%", maxWidth: 430, background: INK, height: "100%", position: "relative", boxShadow: "0 0 80px rgba(0,0,0,0.14)", display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", WebkitOverflowScrolling: "touch" }}>
 
         {/* ── Graphite hero ── */}
-        <div style={{ background: `linear-gradient(180deg, ${INK_SOFT} 0%, ${INK} 62%)`, padding: "0 22px 88px", color: "#fff", position: "relative" }}>
-          {/* status bar */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 2px 2px", fontSize: 15, fontWeight: 600, color: "#fff" }}>
-            <span style={NUM}>9:41</span>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <Signal size={16} strokeWidth={2.4} />
-              <Wifi size={16} strokeWidth={2.4} />
-              <BatteryFull size={22} strokeWidth={1.8} />
-            </div>
-          </div>
+        <div style={{ background: `linear-gradient(180deg, ${INK_SOFT} 0%, ${INK} 62%)`, padding: "calc(env(safe-area-inset-top, 0px) + 18px) 22px 88px", color: "#fff", position: "relative" }}>
 
           {/* brand row */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0, paddingRight: 12 }}>
               <button onClick={() => setMenuOpen(true)} style={{ flexShrink: 0, width: 42, height: 42, borderRadius: 13, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.14)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 16, letterSpacing: "-0.5px", color: "#fff", cursor: "pointer", fontFamily: FONT }}>{STORE_INITIALS}</button>
               <div style={{ minWidth: 0 }}>
@@ -843,7 +831,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
 
           {/* body */}
-          <div style={{ maxHeight: 340, overflowY: "auto" }}>
+          <div style={{ maxHeight: 340, overflowY: "auto", overflowX: "hidden" }}>
             {!tog.pushNotif ? (
               <div style={{ padding: "34px 24px 30px", textAlign: "center" }}>
                 <Bell size={26} color="rgba(255,255,255,0.3)" strokeWidth={2} />
@@ -891,7 +879,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             <span style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Settings</span>
           </div>
           {/* body */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "4px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "4px 16px 40px" }}>
             {SETTINGS_GROUPS.map((g) => (
               <div key={g.title} style={{ marginTop: 22 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "0 6px 10px" }}>{g.title}</div>
@@ -1012,7 +1000,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.75)" }}>Only the account owner can turn automations on or off</span>
             </div>
           )}
-          <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
             {AUTOMATIONS.map((a) => {
               const on = autos[a.key];
               const Icon = a.icon;
@@ -1073,7 +1061,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             })}
           </div>
           {/* list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
             {OFFERS.filter((o) => offerFilter === "all" ? true : o.status === offerFilter).filter((o) => { const q = offerSearch.trim().toLowerCase(); return !q || o.title.toLowerCase().includes(q) || o.sku.toLowerCase().includes(q) || o.barcode.toLowerCase().includes(q); }).map((o) => {
               const s = offerStats(o);
               const st = OFFER_STATUS[o.status];
@@ -1142,7 +1130,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Offer Details</span>
                 <span style={{ width: 44 }} />
               </div>
-              <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
                 <Section pad={false}>
                   <div style={{ display: "flex", gap: 14 }}>
                     <div style={{ width: 70, height: 70, borderRadius: 12, background: "linear-gradient(135deg, rgba(76,141,255,0.22), rgba(139,156,255,0.12))", border: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -1240,7 +1228,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             })}
           </div>
           {/* list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
             {ORDERS.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).map((o) => {
               const st = ORDER_STATUS[o.status];
               return (
@@ -1288,7 +1276,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Detailed View</span>
                 <span style={{ width: 44 }} />
               </div>
-              <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
                 <Section pad={false}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontSize: 22, fontWeight: 800, color: "#fff", ...NUM }}>Order #{o.id}</span>
@@ -1402,7 +1390,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             </div>
           </div>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "10px 16px 40px" }}>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: SO.text, marginTop: 6, marginBottom: 4, letterSpacing: "-0.3px" }}>Sales Optimization Manager</h1>
             <p style={{ fontSize: 12.5, color: SO.textFaint, marginBottom: 20, lineHeight: 1.5 }}>
               {salesOpsPending} recommendation{salesOpsPending !== 1 ? "s" : ""} awaiting your review · nothing changes without approval
@@ -1454,7 +1442,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             <span style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Buy Box Tracking</span>
           </div>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
             {/* summary */}
             <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 18, padding: 18 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
@@ -1616,7 +1604,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             </div>
           ) : reportDef ? (
             <>
-              <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px 20px" }}>
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "18px 16px 20px" }}>
                 <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.5)", padding: "0 4px 14px" }}>{reportDef.subtitle} · {new Date().toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" })}</div>
 
                 {/* summary */}
@@ -1884,17 +1872,10 @@ function AuthGate({ onComplete }) {
   return (
     <div style={{ height: "100%", background: "#D9DCE1", display: "flex", justifyContent: "center", fontFamily: FONT }}>
       <style>{"@keyframes spin{to{transform:rotate(360deg)}}"}</style>
-      <div style={{ width: "100%", maxWidth: 430, background: `linear-gradient(180deg, ${INK_SOFT} 0%, ${INK} 55%)`, height: "100%", boxShadow: "0 0 80px rgba(0,0,0,0.14)", display: "flex", flexDirection: "column", padding: "0 24px 40px", overflowY: "auto", overscrollBehavior: "none", WebkitOverflowScrolling: "touch" }}>
-        {/* status bar */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 2px 2px", fontSize: 15, fontWeight: 600, color: "#fff" }}>
-          <span style={NUM}>9:41</span>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Signal size={16} strokeWidth={2.4} /><Wifi size={16} strokeWidth={2.4} /><BatteryFull size={22} strokeWidth={1.8} />
-          </div>
-        </div>
+      <div style={{ width: "100%", maxWidth: 430, background: `linear-gradient(180deg, ${INK_SOFT} 0%, ${INK} 55%)`, height: "100%", boxShadow: "0 0 80px rgba(0,0,0,0.14)", display: "flex", flexDirection: "column", padding: "calc(env(safe-area-inset-top, 0px) + 24px) 24px 40px", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", WebkitOverflowScrolling: "touch" }}>
 
         {/* brand — intro: jellyfish fades up & out, wordmark rises into its place */}
-        <div style={{ marginTop: 48, display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", alignItems: "center" }}>
           <div style={{ position: "relative", width: 220, height: 152 }}>
             {/* jellyfish */}
             <img src={ICON_LOGO} alt="" style={{
