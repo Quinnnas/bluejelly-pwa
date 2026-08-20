@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabaseClient";
+import { loadStoreData, buildReportDefs } from "./lib/data";
 import {
   Bell,
   ChevronRight,
@@ -90,50 +91,8 @@ function nameFromEmail(email) {
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
-// Report definitions. Rows keep raw values so the Excel export stays numeric.
-const REPORT_DEFS = {
-  "Stock Replenishment": {
-    subtitle: "Recommended reorder based on 7-day sales velocity",
-    columns: ["Product", "In stock", "7-day sold", "Reorder"],
-    money: [],
-    rows: [
-      ["Elfbar EW9000 Grape", 42, 210, 300],
-      ["Elfbar EW9000 Watermelon", 18, 175, 260],
-      ["Elfbar Pod Kit — Blue", 63, 96, 120],
-      ["Vaal Salt 30ml Menthol", 9, 140, 220],
-      ["Vaal Salt 30ml Berry", 27, 118, 160],
-      ["Pod Coils 0.6Ω (5-pack)", 51, 88, 100],
-    ],
-    summary: ["6 SKUs below reorder threshold", "Recommended reorder value: R 41,280", "Priority: Vaal Salt Menthol — 9 left (~2 days cover)"],
-  },
-  "Weekly Report": {
-    subtitle: "Performance for the last 7 days",
-    columns: ["Day", "Orders", "Units", "Sales value"],
-    money: [3],
-    rows: [
-      ["Mon", 210, 236, 66120],
-      ["Tue", 198, 224, 61540],
-      ["Wed", 205, 231, 64782],
-      ["Thu", 188, 210, 58900],
-      ["Fri", 232, 261, 73110],
-      ["Sat", 246, 268, 78940],
-      ["Sun", 123, 216, 55077],
-    ],
-    summary: ["Week total: 1,646 units · R 458,469", "Best day: Sat — R 78,940", "Avg order value: R 279", "+6.2% vs previous week"],
-  },
-  "Monthly Report": {
-    subtitle: "Performance for the last 30 days",
-    columns: ["Week", "Orders", "Units", "Sales value"],
-    money: [3],
-    rows: [
-      ["Week 1", 1402, 1646, 458469],
-      ["Week 2", 1360, 1580, 441200],
-      ["Week 3", 1290, 1520, 430100],
-      ["Week 4", 1180, 1644, 460158],
-    ],
-    summary: ["Month total: 6,390 units · R 1,789,927", "Best week: Week 4 — R 460,158", "Avg order value: R 342", "Top SKU: Elfbar EW9000 Grape"],
-  },
-};
+// Sample REPORT_DEFS removed — reports are built from live data by
+// buildReportDefs() in src/lib/data.js.
 
 const BUYBOX = [
   { name: "Elfbar EW9000 Grape", sku: "ELF-EW9K-GRP", status: "winning", yourPrice: 299, boxPrice: 299, sellers: 3, min: 265, preferred: 330, auto: true },
@@ -155,17 +114,13 @@ const ORDER_STATUS = {
   preparing: { label: "Preparing for customer", color: "#4C8DFF" },
   shipped: { label: "Shipped to customer", color: "#25D366" },
   leadtime: { label: "Lead time order", color: "#F2C14E" },
+  // Real Takealot data contains cancellations and returns; the sample data
+  // never did. Without this the status pill lookup returns undefined and
+  // the Orders list crashes on the first cancelled order.
+  cancelled: { label: "Cancelled / returned", color: "#F87171" },
 };
-const ORDERS = [
-  { id: "217597645", date: "09 Jul", time: "14:00", title: "Elf Bar 9000 Puffs Rechargeable Pod 50mg — Miami Mint", unit: 182, qty: 1, status: "preparing", sku: "EFB9KP002", tsin: "97555812", offerId: "228388102", orderItemId: "429730511", customer: "Thabo Mokoena", orderDC: "JHB", customerDC: "JHB", productCost: 120, deliveryCost: 2, fees: { success: 20, fulfillment: 30, courier: 0, stockTransfer: 0 } },
-  { id: "217597646", date: "09 Jul", time: "14:00", title: "Elfbar EW9000 puffs pods and device system kit Miami mint flavor", unit: 274, qty: 1, status: "preparing", sku: "EFB9KKIT00", tsin: "96771204", offerId: "224119870", orderItemId: "429730544", customer: "Lerato Dlamini", orderDC: "JHB", customerDC: "JHB", productCost: 180, deliveryCost: 2, fees: { success: 30, fulfillment: 40, courier: 0, stockTransfer: 0 } },
-  { id: "217571654", date: "09 Jul", time: "10:03", title: "Nasty Surge 55000 Puffs Disposable Vape — Sunshine Punch Ice", unit: 314, qty: 1, status: "preparing", sku: "NSTY55K018", tsin: "98711660", offerId: "231044552", orderItemId: "429671120", customer: "Sipho Khumalo", orderDC: "JHB", customerDC: "JHB", productCost: 205, deliveryCost: 2, fees: { success: 33, fulfillment: 41, courier: 0, stockTransfer: 0 } },
-  { id: "217571716", date: "09 Jul", time: "09:59", title: "Elf Bar 9000 Puffs Rechargeable Pod 50mg — Sour Lush", unit: 182, qty: 1, status: "shipped", sku: "EFB9KP007", tsin: "97555801", offerId: "228388055", orderItemId: "429730417", customer: "Naledi Mahlangu", orderDC: "JHB", customerDC: "JHB", productCost: 120, deliveryCost: 1, fees: { success: 24, fulfillment: 34, courier: 0, stockTransfer: 0 } },
-  { id: "217570380", date: "09 Jul", time: "09:52", title: "Elfbar EW9000 puffs pods and device system kit cherry strazz", unit: 274, qty: 1, status: "shipped", sku: "EFB9KKIT00", tsin: "96771204", offerId: "224119870", orderItemId: "429712008", customer: "Kagiso Nkosi", orderDC: "JHB", customerDC: "JHB", productCost: 180, deliveryCost: 1, fees: { success: 36, fulfillment: 40, courier: 0, stockTransfer: 0 } },
-  { id: "217574105", date: "09 Jul", time: "10:18", title: "Nasty Bar Strawberry Ice 9000 Puffs Disposable Vape", unit: 246, qty: 1, status: "shipped", sku: "NSTY9K005", tsin: "96560110", offerId: "223477964", orderItemId: "429679100", customer: "Ravhuhali Nesengani", orderDC: "JHB", customerDC: "JHB", productCost: 162, deliveryCost: 1, fees: { success: 32, fulfillment: 38, courier: 0, stockTransfer: 0 } },
-  { id: "217598225", date: "09 Jul", time: "14:03", title: "Elf Bar 9000 Puffs Rechargeable Pod 50mg — Grape", unit: 182, qty: 1, status: "shipped", sku: "EFB9KP008", tsin: "97555819", offerId: "228388198", orderItemId: "429730417", customer: "Shekinah Peters", orderDC: "JHB", customerDC: "JHB", productCost: 120, deliveryCost: 1, fees: { success: 24, fulfillment: 34, courier: 0, stockTransfer: 0 } },
-  { id: "217569409", date: "09 Jul", time: "09:46", title: "ElfBar Premium 16000 Puffs Disposable Pod Kit — Pomegranate Blast", unit: 302, qty: 1, status: "leadtime", sku: "EFB16KKIT0", tsin: "95220417", offerId: "219884301", orderItemId: "429610255", customer: "Amara Botha", orderDC: "JHB", customerDC: "JHB", productCost: 205, deliveryCost: 2, fees: { success: 0, fulfillment: 0, courier: 0, stockTransfer: 0 } },
-];
+// Sample ORDERS removed — the Orders screen now reads sales_cache via
+// loadStoreData(). See src/lib/data.js.
 const vat = (v, incl) => (incl ? v : Math.round(v / 1.15));
 
 // ── Sales Ops (AI Sales Optimization Manager) ──────────────────────────
@@ -221,14 +176,7 @@ const OFFER_STATUS = {
   notbuyable: { label: "Not Buyable", color: "#F2C14E" },
   disabled: { label: "Disabled", color: "#F87171" },
 };
-const OFFERS = [
-  { title: "Nasty Surge 55000 Puffs Disposable Vape — Raspberry Slush", sku: "NSTY55K013", barcode: "MPTALX27545783-1", label: "9902302519475", price: 314, rrp: 360, status: "buyable", warehouseId: "54 287", created: "2026-02-17 12:38", leadTime: "Disabled", storageEligible: false, dcs: { CPT: [0, 63], JHB: [44, 128], DBN: [9, 33] } },
-  { title: "Nasty SURGE 55K Puff Disposable Blackcurrant", sku: "NSTY55K012", barcode: "MPTALX27545784-1", label: "9902302519482", price: 314, rrp: 360, status: "buyable", warehouseId: "54 288", created: "2026-02-17 12:40", leadTime: "Disabled", storageEligible: false, dcs: { CPT: [5, 40], JHB: [40, 90], DBN: [22, 26] } },
-  { title: "Nasty Surge 55000 Puffs Disposable Vape — Watermelon Kiss", sku: "NSTY55K016", barcode: "MPTALX27545790-1", label: "9902302519499", price: 314, rrp: 360, status: "buyable", warehouseId: "54 291", created: "2026-03-02 09:15", leadTime: "Disabled", storageEligible: false, dcs: { CPT: [10, 36], JHB: [30, 70], DBN: [15, 30] } },
-  { title: "Elf Bar 9000 Puffs Rechargeable Pod 50mg — Grape", sku: "EFB9KP008", barcode: "MPTALX27540011-1", label: "9902302511110", price: 182, rrp: 210, status: "buyable", warehouseId: "54 120", created: "2026-01-20 11:02", leadTime: "Disabled", storageEligible: false, dcs: { CPT: [8, 52], JHB: [36, 110], DBN: [12, 40] } },
-  { title: "ElfBar Premium 16000 Puffs Disposable Pod Kit — Pomegranate Blast", sku: "EFB16KKIT0", barcode: "MPTALX27546600-1", label: "9902302520000", price: 302, rrp: 340, status: "notbuyable", warehouseId: "54 350", created: "2026-04-10 15:47", leadTime: "Enabled", storageEligible: true, dcs: { CPT: [0, 12], JHB: [0, 20], DBN: [0, 8] } },
-  { title: "Vaal Salt 30ml Nic Salt — Menthol Ice", sku: "VAAL-30-MNT", barcode: "MPTALX27544400-1", label: "9902302518800", price: 129, rrp: 150, status: "disabled", warehouseId: "53 990", created: "2025-12-05 08:33", leadTime: "Disabled", storageEligible: false, dcs: { CPT: [3, 18], JHB: [9, 44], DBN: [4, 10] } },
-];
+// Sample OFFERS removed — the Offers screen now reads offers_cache.
 function offerStats(o) {
   const dc = o.dcs;
   const stock = dc.CPT[0] + dc.JHB[0] + dc.DBN[0];
@@ -237,7 +185,9 @@ function offerStats(o) {
   const daysCover = dailyAvg > 0 ? Math.round(stock / dailyAvg) : 0;
   const targetStock = sales30;
   const sendIn = Math.max(0, targetStock - stock);
-  const discount = Math.floor(((o.rrp - o.price) / o.rrp) * 100);
+  // rrp can be 0/null in real offers_cache rows (it's one of the
+  // TO CONFIRM fields), which produced NaN% / -Infinity% discounts.
+  const discount = o.rrp > 0 ? Math.floor(((o.rrp - o.price) / o.rrp) * 100) : 0;
   return { stock, sales30, dailyAvg: dailyAvg.toFixed(1), daysCover, targetStock, sendIn, discount };
 }
 
@@ -262,31 +212,35 @@ function downloadXlsx(title, def) {
   XLSX.writeFile(wb, `${STORE} - ${title}.xlsx`);
 }
 
-// Real figures from the store dashboard.
-const ROWS = [
-  { label: "Today", qty: 103, value: 29173 },
-  { label: "Yesterday", qty: 231, value: 64782 },
-  { label: "Last 7 days", qty: 1646, value: 458469 },
-  { label: "Last 30 days", qty: 6390, value: 1789927 },
-  { label: "Last 90 days", qty: 15694, value: 4204293 },
-  { label: "Last 6 months", qty: 20952, value: 5534042 },
-];
+// Sample ROWS removed — the breakdown table is aggregated from
+// sales_cache in buildRows() (src/lib/data.js).
 
-// Sample series for the hero sparkline — replace with Seller API buckets.
-const SERIES = {
-  today: [0, 0, 0, 40, 320, 150, 60, 1200, 2400, 1800, 4200, 6900, 3000, 1846],
-  d7: [55000, 62000, 58000, 71000, 66000, 74000, 72469],
-  d30: [280000, 310000, 296000, 341000, 318000, 244927],
-};
+// Sample SERIES removed — sparkline buckets come from buildSeries().
 
-// `target` = the sales-value goal for each period. Tune these freely.
-const SEGMENTS = [
-  { key: "today", label: "Today", row: 0, series: SERIES.today, target: 35000 },
-  { key: "d7", label: "7 Days", row: 2, series: SERIES.d7, target: 500000 },
-  { key: "d30", label: "30 Days", row: 3, series: SERIES.d30, target: 2000000 },
-];
+// Segment definitions for the hero. Targets come from the Supabase
+// `targets` table when migration 005 has been applied; the fallbacks below
+// are the values that used to be hardcoded here, so the dashboard looks
+// identical either way.
+const TARGET_FALLBACK = { today: 35000, d7: 500000, d30: 2000000 };
 
-const rand = (v) => "R\u00A0" + v.toLocaleString("en-US");
+// Hero segments carry their row OBJECT, not an index into the table.
+// Indices silently pointed at the wrong period the moment the table's
+// rows changed from rolling windows to calendar ones.
+//
+// The hero shows periods in progress — today, this week, this month —
+// because it answers "how am I doing right now", while the table below
+// reports finished periods.
+function buildSegments(rows, series, targets = {}) {
+  const week = rows[2]?.companion || rows[2];
+  const month = rows[3]?.companion || rows[3];
+  return [
+    { key: "today", label: "Today", row: rows[0], series: series.today, target: targets.today ?? TARGET_FALLBACK.today },
+    { key: "week", label: "This week", row: week, series: series.week, target: targets.d7 ?? TARGET_FALLBACK.d7 },
+    { key: "month", label: "This month", row: month, series: series.month, target: targets.d30 ?? TARGET_FALLBACK.d30 },
+  ];
+}
+
+const rand = (v) => "R\u00A0" + (Number.isFinite(v) ? v : 0).toLocaleString("en-US");
 
 function relTime(ts, now) {
   const s = Math.max(0, Math.floor((now - ts) / 1000));
@@ -331,14 +285,65 @@ function fmtUntil(ms) {
   return `${s}s`;
 }
 
-function buildReport() {
+/**
+ * Turns raw Supabase/network errors into something a shop owner can act
+ * on. Three tables failing the same way is one problem, not three, and
+ * "TypeError: Failed to fetch" repeated three times tells nobody anything.
+ */
+function describeDataError(failed) {
+  const messages = failed.map(([, m]) => String(m));
+  const all = messages.join(" ");
+
+  if (messages.every((m) => /failed to fetch|networkerror|load failed/i.test(m))) {
+    return "Can't reach Supabase. Check your internet connection, then try again.";
+  }
+  if (/JWT|api key|invalid.*key|401|403/i.test(all)) {
+    return "Supabase rejected the app's key. Check VITE_SUPABASE_ANON_KEY in the Vercel environment variables.";
+  }
+  if (/does not exist|schema cache|42P01|42703/i.test(all)) {
+    return "A table or column is missing — migration 005 probably hasn't been run in the Supabase SQL editor yet.";
+  }
+  // Nothing recognised: show the distinct messages, not one per table.
+  return [...new Set(messages)].join(" · ");
+}
+
+// Stable zero-state used until the first load resolves. Module-level and
+// frozen so it keeps a single identity across renders — otherwise the
+// useMemo hooks that depend on it would recompute on every render.
+// Must carry every field buildRows() returns. A row shape that's merely
+// "close enough" crashed the whole screen once already.
+const emptyRow = (label, short) => ({
+  label, short, qty: 0, value: 0, preparingQty: 0, preparingValue: 0,
+  shippedQty: 0, shippedValue: 0,
+  placedQty: 0, placedValue: 0, returnedQty: 0, returnedValue: 0,
+  netSales: 0, fees: 0, feesCharged: 0, feesExpected: 0, payout: 0,
+  cost: 0, profit: 0, feesPending: false, pendingFeeValue: 0,
+  estimatedPendingFees: 0, feeRate: 0, partial: true,
+});
+
+// Stable zero-state used until the first load resolves. Module-level and
+// frozen so it keeps a single identity across renders — otherwise the
+// useMemo hooks that depend on it would recompute on every render.
+const EMPTY_DATA = Object.freeze({
+  rows: [
+    emptyRow("Today", "Today"),
+    emptyRow("Yesterday", "Yesterday"),
+    { ...emptyRow("Last week", "Last week"), companion: emptyRow("This week so far", "This week") },
+    { ...emptyRow("Last month", "Last month"), companion: emptyRow("This month so far", "This month") },
+  ],
+  series: { today: [0, 0], week: [0, 0], month: [0, 0] },
+  orders: [], offers: [], rawSales: [], targets: {},
+  lastSync: null, counts: { sales: 0, offers: 0, costs: 0 }, empty: true, errors: {},
+});
+
+function buildReport(rows) {
   const today = new Date().toLocaleDateString("en-ZA", {
     weekday: "short",
     day: "numeric",
     month: "short",
     year: "numeric",
   });
-  const lines = ROWS.map((r) => `${r.label}: ${r.qty} units · ${rand(r.value)}`);
+  const lines = rows.map((r) => `${r.label}: ${r.qty} units · ${rand(r.value)}`);
   return `📊 ${STORE} — Sales Report\n${today}\n\n${lines.join("\n")}`;
 }
 
@@ -400,6 +405,42 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     });
   };
 
+  // ── live store data ────────────────────────────────────────────────
+  // Everything the Dashboard, Orders, Offers and Reports screens show now
+  // comes from here. `data` is null until the first load resolves; the
+  // module-level EMPTY_DATA keeps every downstream reader safe meanwhile,
+  // so no screen has to null-check.
+  const [data, setData] = useState(null);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState("");
+
+  const refreshData = React.useCallback(() => {
+    setDataLoading(true);
+    return loadStoreData()
+      .then((d) => {
+        setData(d);
+        // `targets` is excluded: an error there just means migration 005
+        // hasn't been applied, and the fallback targets cover it.
+        const failed = Object.entries(d.errors).filter(([k]) => k !== "targets");
+        setDataError(failed.length ? describeDataError(failed) : "");
+        if (d.lastSync) setLastSync(d.lastSync);
+      })
+      .catch((e) => setDataError(describeDataError([["data", e.message || String(e)]])))
+      .finally(() => setDataLoading(false));
+  }, []);
+
+  useEffect(() => { refreshData(); }, [refreshData]);
+
+  const D = data || EMPTY_DATA;
+  const liveRows = D.rows;
+  const liveOrders = D.orders;
+  const liveOffers = D.offers;
+  const segments = useMemo(
+    () => buildSegments(D.rows, D.series, D.targets),
+    [D.rows, D.series, D.targets]
+  );
+  const reportDefs = useMemo(() => buildReportDefs(D), [D]);
+
   const [reportKey, setReportKey] = useState(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportGen, setReportGen] = useState(false);
@@ -428,7 +469,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [repriceMin, setRepriceMin] = useState(0);
   const [repriceMax, setRepriceMax] = useState(0);
   const [pushing, setPushing] = useState(false);
-  const reportDef = reportKey ? REPORT_DEFS[reportKey] : null;
+  const reportDef = reportKey ? reportDefs[reportKey] : null;
   const openReport = (key) => {
     setReportKey(key);
     setReportOpen(true);
@@ -462,21 +503,26 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     return () => clearInterval(t);
   }, []);
 
-  // auto-sync pulls in the background while enabled
+  // Auto-refresh in the background while enabled. This re-reads Supabase;
+  // it does NOT pull from Takealot — that's the Python job on the store
+  // PC, on its own Task Scheduler cadence. Every 5 minutes is plenty given
+  // the sync itself only runs every couple of hours.
   useEffect(() => {
     if (!tog.autoSync) return;
-    const t = setInterval(() => setLastSync(Date.now()), 60000);
+    const t = setInterval(() => { refreshData(); }, 300000);
     return () => clearInterval(t);
-  }, [tog.autoSync]);
+  }, [tog.autoSync, refreshData]);
 
   const syncNow = () => {
     setSyncing(true);
-    setTimeout(() => {
-      setLastSync(Date.now());
+    refreshData().then(() => {
       setNowTick(Date.now());
       setSyncing(false);
-      flash("Synced with Takealot");
-    }, 850);
+      // Deliberately not "Synced with Takealot" — the app can't reach
+      // Takealot. It re-reads what the sync job last wrote, and claiming
+      // otherwise would hide a stale or failed sync.
+      flash(dataError ? "Couldn't refresh" : "Refreshed from Supabase");
+    });
   };
 
   const SETTINGS_GROUPS = [
@@ -530,28 +576,30 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     setTimeout(() => setToast(""), 2200);
   };
   const sendWhatsApp = () =>
-    window.open("https://wa.me/?text=" + encodeURIComponent(buildReport()), "_blank");
+    window.open("https://wa.me/?text=" + encodeURIComponent(buildReport(liveRows)), "_blank");
   const copyReport = async () => {
     try {
-      await navigator.clipboard.writeText(buildReport());
+      await navigator.clipboard.writeText(buildReport(liveRows));
       flash("Report copied to clipboard");
     } catch {
       flash("Long-press the preview to copy");
     }
   };
 
-  const active = SEGMENTS[seg];
-  const row = ROWS[active.row];
-  const avg = Math.round(row.value / row.qty);
+  const active = segments[seg];
+  const row = active.row;
+  // Both guarded: with real data a period can legitimately have no sales
+  // (and a target can be unset), which used to render "R NaN" / "NaN%".
+  const avg = row.qty > 0 ? Math.round(row.value / row.qty) : 0;
   const sp = heroChart(active.series, row.value, active.target);
-  const pct = Math.round((row.value / active.target) * 100);
+  const pct = active.target > 0 ? Math.round((row.value / active.target) * 100) : 0;
 
   // Notifications derived from the Notifications settings
-  const todayTarget = SEGMENTS[0].target;
-  const todayVal = ROWS[0].value;
-  const todayPct = Math.round((todayVal / todayTarget) * 100);
+  const todayTarget = segments[0].target;
+  const todayVal = liveRows[0].value;
+  const todayPct = todayTarget > 0 ? Math.round((todayVal / todayTarget) * 100) : 0;
   const allNotifs = [];
-  if (tog.dailySummary) allNotifs.push({ id: "daily", icon: BarChart3, accent: WA, title: "Daily sales summary", body: `Yesterday closed at ${rand(ROWS[1].value)} from ${ROWS[1].qty} orders.`, time: "08:00" });
+  if (tog.dailySummary) allNotifs.push({ id: "daily", icon: BarChart3, accent: WA, title: "Daily sales summary", body: `Yesterday closed at ${rand(liveRows[1].value)} from ${liveRows[1].qty} orders.`, time: "08:00" });
   if (tog.targetAlerts) allNotifs.push({ id: "target", icon: Target, accent: GOLD, title: "Target progress", body: `Today is ${todayPct}% to your ${rand(todayTarget)} target — ${rand(Math.max(0, todayTarget - todayVal))} to go.`, time: "just now" });
   if (tog.lowStock) allNotifs.push({ id: "lowstock", icon: AlertTriangle, accent: "#F87171", title: "Low-stock warning", body: "3 SKUs are running low and may need replenishment.", time: "1h ago" });
   const notifItems = tog.pushNotif ? allNotifs : [];
@@ -625,7 +673,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
 
           {/* segmented control */}
           <div style={{ display: "flex", background: "rgba(255,255,255,0.07)", borderRadius: 12, padding: 4, marginTop: 26, gap: 4 }}>
-            {SEGMENTS.map((s, i) => (
+            {segments.map((s, i) => (
               <button key={s.key} onClick={() => setSeg(i)} style={{ flex: 1, padding: "9px 0", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 600, fontFamily: FONT, background: i === seg ? "#fff" : "transparent", color: i === seg ? INK : "rgba(255,255,255,0.62)", transition: "all 0.18s ease" }}>{s.label}</button>
             ))}
           </div>
@@ -708,29 +756,153 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             <span style={{ fontSize: 13, color: FAINT }}>All periods</span>
           </div>
 
+          {/* Status banner. An empty database has to read as "nothing has
+              synced yet", never as a store that sold nothing — those look
+              identical in the numbers and mean completely different things. */}
+          {(dataError || (!dataLoading && D.empty)) && (
+            <div style={{ display: "flex", gap: 11, alignItems: "flex-start", background: dataError ? "rgba(248,113,113,0.10)" : "rgba(242,193,78,0.10)", border: "1px solid " + (dataError ? "rgba(248,113,113,0.30)" : "rgba(242,193,78,0.30)"), borderRadius: 14, padding: "13px 15px", marginBottom: 14 }}>
+              <AlertTriangle size={17} color={dataError ? "#F87171" : GOLD} strokeWidth={2.4} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+                <div style={{ color: "#fff", fontWeight: 700, marginBottom: 2 }}>
+                  {dataError ? "Couldn't load your data" : "No data synced yet"}
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.6)" }}>
+                  {dataError
+                    ? dataError
+                    : "The dashboard is empty because the Takealot sync hasn't written anything to Supabase yet. Run sync_takealot.py on the store PC, then pull down to refresh."}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* table — dark glass panel */}
           <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, borderRadius: 20, border: "1px solid " + PANEL_BORDER, boxShadow: "0 12px 34px rgba(12,15,20,0.22), inset 0 1px 0 rgba(255,255,255,0.05)", overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.7fr 1.2fr 26px", padding: "16px 18px 13px", borderBottom: "1px solid " + PANEL_HAIR }}>
-              <span style={thDark}>Sales</span>
-              <span style={thDark}>Qty</span>
-              <span style={thDark}>Sales Value</span>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 6, padding: "16px 18px 13px", borderBottom: "1px solid " + PANEL_HAIR }}>
+              <span style={thDark} />
+              <span style={{ ...thDark, textAlign: "right", whiteSpace: "nowrap" }} title="Units still Preparing for customer — ordered, not yet dispatched">Prep</span>
+              <span style={{ ...thDark, textAlign: "right", whiteSpace: "nowrap" }} title="Units already Shipped to customer">Ship</span>
+              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }}>Sales Value</span>
+              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }} title="Shipped units only, after Takealot fees and product cost. Undispatched orders are not counted.">Gross Profit</span>
               <span />
             </div>
-            {ROWS.map((r, i) => {
+            {liveRows.map((r, i) => {
               const isOpen = open === i;
-              const a = Math.round(r.value / r.qty);
+              // Guard the divide: a period with no sales is normal now that
+              // these are real numbers, and NaN would render as "R NaN".
+              const a = r.qty > 0 ? Math.round(r.value / r.qty) : 0;
               return (
                 <div key={r.label} style={{ borderTop: i === 0 ? "none" : "1px solid " + PANEL_HAIR }}>
-                  <button onClick={() => setOpen(isOpen ? null : i)} style={{ width: "100%", display: "grid", gridTemplateColumns: "1.3fr 0.7fr 1.2fr 26px", alignItems: "center", padding: "17px 18px", border: "none", background: "transparent", textAlign: "left", cursor: "pointer" }}>
-                    <span style={{ fontSize: 16, color: "rgba(255,255,255,0.95)", fontWeight: 500 }}>{r.label}</span>
-                    <span style={{ fontSize: 16, color: "rgba(255,255,255,0.8)", ...NUM }}>{r.qty.toLocaleString("en-US")}</span>
-                    <span style={{ fontSize: 16, color: "#fff", fontWeight: 600, ...NUM }}>{rand(r.value)}</span>
-                    <ChevronRight size={19} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ justifySelf: "end", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
+                  <button onClick={() => setOpen(isOpen ? null : i)} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 6, alignItems: "center", padding: "17px 18px", border: "none", background: "transparent", textAlign: "left", cursor: "pointer" }}>
+                    <span style={{ fontSize: 14.5, color: "rgba(255,255,255,0.95)", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {r.short || r.label}
+                      {/* The sync keeps a rolling window, so wider periods
+                          can be genuinely incomplete. Saying so beats
+                          showing a confidently wrong total. */}
+                      {r.partial && !dataLoading && (
+                        <span title="The sync doesn't hold this much history yet — this total is incomplete." style={{ marginLeft: 5, fontSize: 9, fontWeight: 800, color: GOLD, background: GOLD + "1F", border: "1px solid " + GOLD + "3D", borderRadius: 5, padding: "1px 4px", verticalAlign: "middle", letterSpacing: "0.02em" }}>PART</span>
+                      )}
+                    </span>
+                    {/* Ordered but not yet dispatched. Its own column so
+                        the part of the day's trade still sitting in the
+                        warehouse is visible at a glance. */}
+                    <span style={{ fontSize: 14, color: r.preparingQty > 0 ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.25)", fontWeight: 400, whiteSpace: "nowrap", textAlign: "right", ...NUM }} title={r.preparingQty > 0 ? `${r.preparingQty} units awaiting dispatch (${rand(r.preparingValue)})` : "Everything dispatched"}>{r.preparingQty.toLocaleString("en-US")}</span>
+                    <span style={{ fontSize: 14, color: r.shippedQty > 0 ? "#4C8DFF" : "rgba(255,255,255,0.25)", fontWeight: r.shippedQty > 0 ? 700 : 400, whiteSpace: "nowrap", textAlign: "right", ...NUM }} title={`${r.shippedQty} shipped of ${r.qty} sold`}>{r.shippedQty.toLocaleString("en-US")}</span>
+                    <span style={{ fontSize: 14, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>{rand(r.value)}</span>
+                    {/* Net of Takealot's fees and product cost. Fees on
+                        orders that haven't shipped are estimated, so this
+                        stays realistic on a day where much of the book is
+                        still "Preparing" — the dot marks that. */}
+                    <span style={{ fontSize: 14, color: r.profit >= 0 ? POS : "#F87171", fontWeight: 700, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>
+                      {rand(r.profit)}
+                    </span>
+                    <ChevronRight size={17} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ justifySelf: "end", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
                   </button>
-                  <div style={{ maxHeight: isOpen ? 54 : 0, overflow: "hidden", transition: "max-height 0.24s ease" }}>
-                    <div style={{ margin: "0 18px 12px", padding: "11px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid " + PANEL_HAIR, borderRadius: 11, display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
-                      <span style={{ color: "rgba(255,255,255,0.5)" }}>Average order value</span>
-                      <span style={{ color: "#fff", fontWeight: 700, ...NUM }}>{rand(a)}</span>
+                  {/* What sold -> what actually reaches the bank. */}
+                  {/* Rows carrying a companion period are taller. A single
+                      fixed max-height silently clipped that block off the
+                      bottom — the content was in the DOM but invisible. */}
+                  <div style={{ maxHeight: isOpen ? (r.companion ? 560 : 380) : 0, overflow: "hidden", transition: "max-height 0.3s ease" }}>
+                    <div style={{ margin: "0 18px 12px", padding: "13px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid " + PANEL_HAIR, borderRadius: 11, fontSize: 13.5 }}>
+                      {/* The table now shows Prep and Ship as separate
+                          groups, so the total only appears here. */}
+                      <WaterfallRow
+                        label={`Sold · ${r.qty.toLocaleString("en-US")} units`}
+                        value={rand(r.value)}
+                      />
+                      <div style={{ fontSize: 11.5, color: FAINT, margin: "-1px 0 7px", ...NUM }}>
+                        {r.shippedQty.toLocaleString("en-US")} shipped
+                        {r.preparingQty > 0 && ` · ${r.preparingQty.toLocaleString("en-US")} still preparing`}
+                      </div>
+                      {/* Everything below counts SHIPPED units only, with
+                          fees Takealot has actually charged. Nothing here
+                          is estimated — Takealot pays out on dispatch, so
+                          undispatched stock isn't earned yet. */}
+                      <div style={{ height: 1, background: PANEL_HAIR, margin: "9px 0" }} />
+                      <div style={{ fontSize: 11, color: FAINT, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>
+                        Banked · shipped only
+                      </div>
+                      <WaterfallRow label={`Shipped · ${r.shippedQty.toLocaleString("en-US")} units`} value={rand(r.shippedValue)} />
+                      <WaterfallRow label="Takealot fees charged" value={"−" + rand(r.feesCharged)} dim />
+                      <WaterfallRow label="Money in the bank" value={rand(r.payout)} accent={WA} bold />
+                      {r.cost > 0 && (
+                        <>
+                          <WaterfallRow label="Product cost" value={"−" + rand(r.cost)} dim />
+                          <WaterfallRow
+                            label="Gross profit"
+                            value={rand(r.profit) + (r.shippedValue > 0 ? `  ·  ${Math.round((r.profit / Math.max(1, r.shippedValue)) * 100)}%` : "")}
+                            accent={r.profit >= 0 ? POS : "#F87171"}
+                            bold
+                          />
+                        </>
+                      )}
+                      {/* The gap between Sales Value and the banked figure. */}
+                      {r.preparingQty > 0 && (
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: FAINT, lineHeight: 1.45 }}>
+                          Not yet banked: <span style={{ color: "rgba(255,255,255,0.75)", ...NUM }}>{rand(r.pendingFeeValue)}</span> across{" "}
+                          {r.preparingQty.toLocaleString("en-US")} units awaiting dispatch.
+                          Expect roughly {rand(r.feesExpected)} in fees on it once shipped.
+                        </div>
+                      )}
+                      <div style={{ height: 1, background: PANEL_HAIR, margin: "9px 0" }} />
+                      <WaterfallRow label="Average order value" value={rand(a)} dim />
+                      {/* The figures above exclude cancellations, so they sit
+                          below Takealot's own portal. Showing the excluded
+                          amount keeps the two reconcilable. */}
+                      {r.returnedQty > 0 && (
+                        <WaterfallRow
+                          label={`Excluded · ${r.returnedQty} cancelled/returned`}
+                          value={rand(r.returnedValue)}
+                          dim
+                        />
+                      )}
+                      {/* The same period currently in progress, so a
+                          finished week or month can be read against the
+                          one running now. */}
+                      {r.companion && (
+                        <div style={{ marginTop: 11, paddingTop: 10, borderTop: "1px dashed " + PANEL_HAIR }}>
+                          <div style={{ fontSize: 11, color: FAINT, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+                            {r.companion.label}
+                          </div>
+                          <WaterfallRow label={`Sold · ${r.companion.qty.toLocaleString("en-US")} units`} value={rand(r.companion.value)} />
+                          <WaterfallRow label="Gross profit · shipped" value={rand(r.companion.profit)} accent={r.companion.profit >= 0 ? POS : "#F87171"} bold />
+                          {r.companion.preparingQty > 0 && (
+                            <WaterfallRow label={`Awaiting dispatch · ${r.companion.preparingQty} units`} value={rand(r.companion.preparingValue)} dim />
+                          )}
+                          {r.companion.partial && (
+                            <div style={{ marginTop: 6, fontSize: 11, color: GOLD }}>
+                              Incomplete — the sync doesn't reach the start of this period.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {r.feesPending && (
+                        <div style={{ marginTop: 9, fontSize: 11.5, color: FAINT, lineHeight: 1.45 }}>
+                          {rand(r.pendingFeeValue)} of this is still "Preparing for customer".
+                          Takealot only charges its fees on dispatch, so that share is
+                          estimated at {Math.round(r.feeRate * 100)}% — the rate this store is
+                          actually charged. It settles to the real figure as the orders ship.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -885,12 +1057,12 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "15px 16px" }}>
                             <span style={{ fontSize: 15.5, color: "#fff", fontWeight: 500 }}>{r.label}</span>
                             <button onClick={() => setPeriodPickerOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
-                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600 }}>{SEGMENTS[defaultPeriod].label}</span>
+                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600 }}>{segments[defaultPeriod].label}</span>
                               <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: periodPickerOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
                             </button>
                           </div>
                           <div style={{ maxHeight: periodPickerOpen ? 180 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
-                            {SEGMENTS.map((s, si) => (
+                            {segments.map((s, si) => (
                               <button key={s.key} onClick={() => { setDefaultPeriod(si); setSeg(si); setPeriodPickerOpen(false); flash("Default period: " + s.label); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "13px 16px 13px 28px", border: "none", borderTop: "1px solid " + PANEL_HAIR, background: si === defaultPeriod ? "rgba(255,255,255,0.05)" : "transparent", cursor: "pointer", fontFamily: FONT }}>
                                 <span style={{ fontSize: 14.5, color: si === defaultPeriod ? "#fff" : "rgba(255,255,255,0.6)", fontWeight: si === defaultPeriod ? 600 : 500 }}>{s.label}</span>
                                 {si === defaultPeriod && <Check size={17} color={WA} strokeWidth={3} />}
@@ -1046,7 +1218,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           {/* filter chips */}
           <div style={{ display: "flex", gap: 8, padding: "0 16px 12px", overflowX: "auto", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
             {[["all", "All"], ["buyable", "Buyable"], ["notbuyable", "Not Buyable"], ["disabled", "Disabled"]].map(([k, lbl]) => {
-              const n = k === "all" ? OFFERS.length : OFFERS.filter((o) => o.status === k).length;
+              const n = k === "all" ? liveOffers.length : liveOffers.filter((o) => o.status === k).length;
               const on = offerFilter === k;
               return (
                 <button key={k} onClick={() => setOfferFilter(k)} style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, border: "1px solid " + (on ? "transparent" : "rgba(255,255,255,0.12)"), background: on ? WA : "rgba(255,255,255,0.05)", color: on ? "#0C0F14" : "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" }}>{lbl} ({n})</button>
@@ -1055,7 +1227,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* list */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
-            {OFFERS.filter((o) => offerFilter === "all" ? true : o.status === offerFilter).filter((o) => { const q = offerSearch.trim().toLowerCase(); return !q || o.title.toLowerCase().includes(q) || o.sku.toLowerCase().includes(q) || o.barcode.toLowerCase().includes(q); }).map((o) => {
+            {liveOffers.filter((o) => offerFilter === "all" ? true : o.status === offerFilter).filter((o) => { const q = offerSearch.trim().toLowerCase(); return !q || o.title.toLowerCase().includes(q) || o.sku.toLowerCase().includes(q) || o.barcode.toLowerCase().includes(q); }).map((o) => {
               const s = offerStats(o);
               const st = OFFER_STATUS[o.status];
               return (
@@ -1212,8 +1384,8 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* filter chips */}
           <div style={{ display: "flex", gap: 8, padding: "4px 16px 14px", overflowX: "auto", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-            {[["all", "All"], ["preparing", "Preparing"], ["shipped", "Shipped"], ["leadtime", "Lead time"]].map(([k, lbl]) => {
-              const n = k === "all" ? ORDERS.length : ORDERS.filter((o) => o.status === k).length;
+            {[["all", "All"], ["preparing", "Preparing"], ["shipped", "Shipped"], ["leadtime", "Lead time"], ["cancelled", "Cancelled"]].map(([k, lbl]) => {
+              const n = k === "all" ? liveOrders.length : liveOrders.filter((o) => o.status === k).length;
               const on = orderFilter === k;
               return (
                 <button key={k} onClick={() => setOrderFilter(k)} style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, border: "1px solid " + (on ? "transparent" : "rgba(255,255,255,0.12)"), background: on ? WA : "rgba(255,255,255,0.05)", color: on ? "#0C0F14" : "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" }}>{lbl} ({n})</button>
@@ -1222,10 +1394,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* list */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
-            {ORDERS.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).map((o) => {
+            {liveOrders.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).map((o) => {
               const st = ORDER_STATUS[o.status];
+              // Keyed on orderItemId, not id: one order can hold several
+              // line items, so `id` (the order number) repeats and React
+              // silently duplicates or drops rows.
               return (
-                <button key={o.id} onClick={() => { setOrderDetail(o); setFeesVat(true); setProfitVat(true); }} style={{ width: "100%", textAlign: "left", background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 16, marginBottom: 12, cursor: "pointer", fontFamily: FONT }}>
+                <button key={o.orderItemId} onClick={() => { setOrderDetail(o); setFeesVat(true); setProfitVat(true); }} style={{ width: "100%", textAlign: "left", background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 16, marginBottom: 12, cursor: "pointer", fontFamily: FONT }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                     <span style={{ fontSize: 14.5, color: "rgba(255,255,255,0.9)", lineHeight: 1.35, flex: 1 }}>{o.title}</span>
                     <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", textAlign: "right", flexShrink: 0, ...NUM }}>{o.date}<br />{o.time}</span>
@@ -1663,6 +1838,16 @@ const stepBtn = { width: 30, height: 30, borderRadius: 9, border: "1px solid rgb
 const presetBtn = { flex: 1, padding: "9px 0", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT };
 const miniBtn = { width: 22, height: 18, borderRadius: 6, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 12, cursor: "pointer", lineHeight: 1, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT };
 
+// One line of the breakdown waterfall: label left, figure right.
+function WaterfallRow({ label, value, dim = false, bold = false, accent }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "3px 0" }}>
+      <span style={{ color: dim ? "rgba(255,255,255,0.42)" : "rgba(255,255,255,0.6)", fontSize: bold ? 13.5 : 13 }}>{label}</span>
+      <span style={{ color: accent || (dim ? "rgba(255,255,255,0.6)" : "#fff"), fontWeight: bold ? 800 : 600, fontSize: bold ? 14.5 : 13.5, ...NUM }}>{value}</span>
+    </div>
+  );
+}
+
 function Toggle({ on, onClick, locked = false }) {
   return (
     <button onClick={locked ? undefined : onClick} disabled={locked} style={{ width: 48, height: 29, borderRadius: 15, border: "none", cursor: locked ? "default" : "pointer", background: on ? WA : "rgba(255,255,255,0.16)", position: "relative", transition: "background 0.2s ease", flexShrink: 0, padding: 0, opacity: locked ? 0.55 : 1 }}>
@@ -1823,9 +2008,25 @@ function AuthGate({ onComplete }) {
     const clean = email.trim().toLowerCase();
     supabase.auth.signInWithPassword({ email: clean, password: pw }).then(async ({ data, error }) => {
       if (error) { setBusy(false); return setErr(error.message === "Invalid login credentials" ? "Wrong email or password." : error.message); }
-      const { data: profile, error: profErr } = await supabase.from("profiles").select("name, email, role").eq("id", data.user.id).single();
+
+      let { data: profile, error: profErr } = await supabase.from("profiles").select("name, email, role").eq("id", data.user.id).single();
+
+      if (profErr || !profile) {
+        // Self-heal: this happens when email confirmation delayed sign-up's
+        // profile insert until after the app had already moved on. The name
+        // typed at sign-up survives in Supabase's own user_metadata, so we
+        // recover it from there rather than losing it.
+        const recoveredName = data.user.user_metadata?.name || nameFromEmail(clean);
+        const { data: created, error: createErr } = await supabase
+          .from("profiles")
+          .insert({ id: data.user.id, email: clean, name: recoveredName })
+          .select("name, email, role")
+          .single();
+        if (createErr) { setBusy(false); return setErr("Signed in, but couldn't set up your profile — contact the admin."); }
+        profile = created;
+      }
+
       setBusy(false);
-      if (profErr || !profile) return setErr("Signed in, but no profile was found — contact the admin.");
       onComplete("", profile.email, profile.name || nameFromEmail(profile.email), profile.role);
     });
   };
@@ -1842,10 +2043,17 @@ function AuthGate({ onComplete }) {
       if (rpcErr) { setBusy(false); return setErr("Couldn't verify access right now. Please try again."); }
       if (!isApproved) { setBusy(false); return setErr("This email isn't approved for access. Please contact the admin."); }
 
-      const { data, error } = await supabase.auth.signUp({ email: clean, password: pw });
+      // The name is saved into Supabase's own user_metadata here (separate
+      // from our profiles table) specifically so it survives even if email
+      // confirmation delays the profile row being created — doSignin's
+      // self-heal step above recovers it from here.
+      const { data, error } = await supabase.auth.signUp({
+        email: clean,
+        password: pw,
+        options: { data: { name: name.trim() } },
+      });
       if (error) { setBusy(false); return setErr(error.message); }
       if (!data.session) {
-        // Project has "Confirm email" turned on — no session yet until they click the emailed link.
         setBusy(false);
         return setErr("Account created — check your email to confirm it, then sign in.");
       }

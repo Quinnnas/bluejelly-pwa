@@ -1,0 +1,13 @@
+# Normalise line endings so an editor or script on Windows can't turn a
+# three-line change into a whole-file diff on GitHub. App.jsx is a single
+# 2,000-line file — without this, one accidental CRLF rewrite makes its
+# history unreviewable.
+* text=auto eol=lf
+
+# Binary assets: never touch these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
