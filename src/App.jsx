@@ -136,40 +136,8 @@ const SO = {
 };
 const SO_URGENCY_COLOR = { high: SO.red, medium: SO.gold, low: SO.green };
 
-const SALES_OPS_RECS = [
-  {
-    id: "r1", type: "price", sku: "ELF-EW9K-WML", family: "Elf Bar EW9000 — Watermelon",
-    confidence: 92, urgency: "high",
-    current: { price: 315, margin: 22.1 }, proposed: { price: 305, margin: 18.4 },
-    signal: "Competitor Buy Box dropped to R305 three days ago — you've lost the Buy Box on 61% of sessions since.",
-    impact: "+14 est. units/wk",
-    reasoning: "Price elasticity for this SKU family is high. Matching the Buy Box at R305 wins it back while keeping margin above your R290 floor.",
-  },
-  {
-    id: "r2", type: "stock", sku: "VAAL-30-MNT", family: "Vaal Salt 30ml — Menthol Ice",
-    confidence: 88, urgency: "high",
-    current: { stock: 9, daysCover: 2 }, proposed: { reorderQty: 220, reorderBy: "24 Jul" },
-    signal: "Sell-through accelerated after last week's price cut. Current stock covers ~2 days at the new velocity.",
-    impact: "Avoid ~R18,400 lost sales",
-    reasoning: "Lead time from supplier is 4 days (1 day dispatch + 3 days transit). Ordering by 24 Jul keeps a safety buffer instead of stocking out.",
-  },
-  {
-    id: "r3", type: "price", sku: "DISP-XL-ICE", family: "Disposable XL — Ice",
-    confidence: 76, urgency: "medium",
-    current: { price: 149, margin: 26.0 }, proposed: { price: 154, margin: 27.6 },
-    signal: "You've held the #1 Buy Box spot for 11 straight days with no rank drop at current price.",
-    impact: "+R5.00/unit margin, no est. volume loss",
-    reasoning: "No competitor has matched your price in 11 days. A small upward test captures margin with low risk to Buy Box position.",
-  },
-  {
-    id: "r4", type: "stock", sku: "COIL-06-5PK", family: "Pod Coils 0.6Ω (5-pack)",
-    confidence: 64, urgency: "low",
-    current: { stock: 51, daysCover: 41 }, proposed: { reorderQty: 0, reorderBy: "Hold" },
-    signal: "Sell-through slowed over the last 3 weeks. Current stock covers 41 days — well above target.",
-    impact: "Avoid overstock / tied-up capital",
-    reasoning: "No reorder needed this cycle. Consider a small promo push if cover exceeds 60 days.",
-  },
-];
+// Sample SALES_OPS_RECS removed — recommendations are generated in
+// Python (takealot/sales_ops.py) and read from sales_ops_recommendations.
 
 const OFFER_STATUS = {
   buyable: { label: "Buyable", color: "#25D366" },
@@ -332,7 +300,7 @@ const EMPTY_DATA = Object.freeze({
     { ...emptyRow("Last month", "Last month"), companion: emptyRow("This month so far", "This month") },
   ],
   series: { today: [0, 0], week: [0, 0], month: [0, 0] },
-  orders: [], offers: [], rawSales: [], targets: {},
+  orders: [], offers: [], rawSales: [], targets: {}, recommendations: [],
   lastSync: null, counts: { sales: 0, offers: 0, costs: 0 }, empty: true, errors: {},
 });
 
@@ -447,12 +415,43 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [buyBoxOpen, setBuyBoxOpen] = useState(false);
   const [salesOpsOpen, setSalesOpsOpen] = useState(false);
   const [salesOpsFilter, setSalesOpsFilter] = useState("all");
+
+  // Decisions live in Supabase, not component state. Approving something
+  // and having it reappear on refresh would make the screen useless.
+  // `salesOpsDecisions` holds only optimistic overlays on top of what the
+  // database already returned.
   const [salesOpsDecisions, setSalesOpsDecisions] = useState({});
-  const salesOpsDecide = (id, decision) => setSalesOpsDecisions((p) => ({ ...p, [id]: decision }));
-  const salesOpsFiltered = salesOpsFilter === "all" ? SALES_OPS_RECS : SALES_OPS_RECS.filter((r) => r.type === salesOpsFilter);
-  const salesOpsPending = SALES_OPS_RECS.filter((r) => !salesOpsDecisions[r.id]).length;
-  const salesOpsHighUrgentPending = SALES_OPS_RECS.filter((r) => r.urgency === "high" && !salesOpsDecisions[r.id]).length;
-  const salesOpsApprovedToday = Object.values(salesOpsDecisions).filter((d) => d === "approved").length;
+  const decisionOf = (r) => salesOpsDecisions[r.id] ?? r.decision ?? null;
+
+  const salesOpsDecide = (id, decision) => {
+    const previous = salesOpsDecisions[id];
+    setSalesOpsDecisions((p) => ({ ...p, [id]: decision }));
+    supabase
+      .from("sales_ops_recommendations")
+      .update({
+        decision,
+        decided_at: new Date().toISOString(),
+        decided_by: currentEmail || null,
+      })
+      .eq("id", id)
+      .then(({ error }) => {
+        if (error) {
+          // RLS blocks non-owners from deciding. Roll the card back rather
+          // than leaving it looking actioned when nothing was saved.
+          setSalesOpsDecisions((p) => ({ ...p, [id]: previous }));
+          flash(isOwner ? "Couldn't save that decision" : "Only the owner can action these");
+          console.error("Sales Ops decision failed:", error.message);
+        }
+      });
+  };
+
+  const liveRecs = D.recommendations;
+  const salesOpsFiltered = salesOpsFilter === "all"
+    ? liveRecs
+    : liveRecs.filter((r) => r.type === salesOpsFilter);
+  const salesOpsPending = liveRecs.filter((r) => !decisionOf(r)).length;
+  const salesOpsHighUrgentPending = liveRecs.filter((r) => r.urgency === "high" && !decisionOf(r)).length;
+  const salesOpsApprovedToday = liveRecs.filter((r) => decisionOf(r) === "approved").length;
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [offersOpen, setOffersOpen] = useState(false);
   const [offerDetail, setOfferDetail] = useState(null);
@@ -1582,7 +1581,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
 
             {/* Filter tabs */}
             <div style={{ display: "flex", gap: 4, marginBottom: 16, padding: 4, borderRadius: 10, backgroundColor: SO.surface, border: "1px solid " + SO.border, width: "fit-content" }}>
-              {[["all", "All"], ["price", "Pricing"], ["stock", "Stock"]].map(([k, lbl]) => (
+              {[["all", "All"], ["guardrail", "Pricing"], ["stock", "Stock"]].map(([k, lbl]) => (
                 <button key={k} onClick={() => setSalesOpsFilter(k)} style={{ padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, border: "none", cursor: "pointer", fontFamily: FONT, backgroundColor: salesOpsFilter === k ? SO.surfaceAlt : "transparent", color: salesOpsFilter === k ? SO.text : SO.textFaint }}>{lbl}</button>
               ))}
             </div>
@@ -1590,7 +1589,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             {/* Cards */}
             <div>
               {salesOpsFiltered.map((rec) => (
-                <SalesOpsCard key={rec.id} rec={rec} decided={salesOpsDecisions[rec.id]} onDecide={salesOpsDecide} />
+                <SalesOpsCard key={rec.id} rec={rec} decided={decisionOf(rec)} onDecide={salesOpsDecide} />
               ))}
             </div>
 
@@ -1894,7 +1893,9 @@ function PulseDot({ urgency }) {
 function SalesOpsCard({ rec, onDecide, decided }) {
   const [open, setOpen] = useState(false);
   const color = SO_URGENCY_COLOR[rec.urgency];
-  const isPrice = rec.type === "price";
+  // The generator emits "guardrail" for price issues; "price" is kept
+  // so a future elasticity recommendation renders the same way.
+  const isPrice = rec.type === "guardrail" || rec.type === "price";
   return (
     <div style={{ borderRadius: 14, border: "1px solid " + SO.border, backgroundColor: SO.surface, transition: "opacity 0.3s ease", opacity: decided ? 0.4 : 1, marginBottom: 12 }}>
       <div style={{ padding: 16, display: "flex", alignItems: "flex-start", gap: 12 }}>
@@ -1922,13 +1923,13 @@ function SalesOpsCard({ rec, onDecide, decided }) {
                 <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>CURRENT</span><span style={{ color: SO.text, fontWeight: 600, ...NUM }}>{rand(rec.current.price)}</span></div>
                 <ArrowDownRight size={13} color={SO.textFainter} style={{ marginBottom: 3 }} />
                 <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>PROPOSED</span><span style={{ color: SO.goldLight, fontWeight: 600, ...NUM }}>{rand(rec.proposed.price)}</span></div>
-                <div style={{ marginLeft: "auto", textAlign: "right" }}><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>MARGIN</span><span style={{ color: SO.text, ...NUM }}>{rec.current.margin}% → {rec.proposed.margin}%</span></div>
+                <div style={{ marginLeft: "auto", textAlign: "right" }}><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>{rec.current.floor != null ? "YOUR FLOOR" : "YOUR CEILING"}</span><span style={{ color: SO.text, ...NUM }}>{rand(rec.current.floor ?? rec.current.ceiling ?? 0)}</span></div>
               </>
             ) : (
               <>
-                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>STOCK</span><span style={{ color: SO.text, ...NUM }}>{rec.current.stock} units · {rec.current.daysCover}d cover</span></div>
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>STOCK</span><span style={{ color: SO.text, ...NUM }}>{rec.current.stock} units · {rec.current.days_cover}d cover</span></div>
                 <ArrowUpRight size={13} color={SO.textFainter} style={{ marginBottom: 3 }} />
-                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>REORDER</span><span style={{ color: SO.goldLight, ...NUM }}>{rec.proposed.reorderQty > 0 ? `${rec.proposed.reorderQty} units by ${rec.proposed.reorderBy}` : "Hold"}</span></div>
+                <div><span style={{ display: "block", fontSize: 10, color: SO.textFainter, marginBottom: 2 }}>REORDER</span><span style={{ color: SO.goldLight, ...NUM }}>{rec.proposed.send_in > 0 ? `Send in ${rec.proposed.send_in} unit${rec.proposed.send_in === 1 ? "" : "s"}` : "Hold"}</span></div>
               </>
             )}
           </div>

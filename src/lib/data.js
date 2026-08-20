@@ -12,6 +12,7 @@
  */
 import { supabase } from "./supabaseClient";
 import {
+  buildRecommendations,
   buildOffers,
   buildOrders,
   buildRows,
@@ -108,12 +109,20 @@ async function fetchAllSales(since) {
 export async function loadStoreData(now = Date.now()) {
   const since = historyStart(now).toISOString();
 
-  const [salesRes, offersRes, costsRes, targetsRes, coverageStart] = await Promise.all([
+  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, recsRes] = await Promise.all([
     fetchAllSales(since),
     supabase.from("offers_cache").select("*").order("sku"),
-    supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat"),
+    supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat, min_price, max_price"),
     supabase.from("targets").select("period, sales_value"),
     fetchCoverageStart(),
+    // Sales Ops. Only what the generator still considers true, worst
+    // first. Undecided items lead; actioned ones stay visible below.
+    supabase
+      .from("sales_ops_recommendations")
+      .select("*")
+      .eq("is_current", true)
+      .order("value_rand", { ascending: false })
+      .limit(200),
   ]);
 
   const errors = {};
@@ -124,6 +133,9 @@ export async function loadStoreData(now = Date.now()) {
   // migration 005 hasn't been applied yet. The caller treats it as
   // non-fatal and falls back to the previously hardcoded targets.
   if (targetsRes.error) errors.targets = targetsRes.error.message;
+  // Sales Ops is newest of all — a missing table just means migration 008
+  // hasn't run. Non-fatal, same as targets.
+  if (recsRes.error) errors.recommendations = recsRes.error.message;
 
   const rawSales = prepareSales(salesRes.data || []);
   const costsBySku = new Map((costsRes.data || []).map((c) => [c.sku, c]));
@@ -149,6 +161,7 @@ export async function loadStoreData(now = Date.now()) {
     rawSales,
     targets,
     lastSync: lastSync ? new Date(lastSync).getTime() : null,
+    recommendations: buildRecommendations(recsRes.data || []),
     counts: { sales: rawSales.length, offers: offers.length, costs: costsBySku.size },
     // True when the sync has genuinely never populated anything — the
     // difference between "no data yet" and "a quiet trading day".

@@ -499,3 +499,37 @@ export function buildReportDefs(data, now = Date.now()) {
     },
   };
 }
+
+/**
+ * Sales Ops recommendations, shaped for the card the UI already draws.
+ *
+ * The generator (Python, takealot/sales_ops.py) owns the logic; this only
+ * renames fields. Undecided items sort first so the list is a worklist
+ * rather than an archive — actioned ones stay visible underneath.
+ */
+export function buildRecommendations(rows) {
+  return rows
+    .map((r) => ({
+      id: r.id,
+      type: r.type,
+      sku: r.sku,
+      family: r.title || r.sku,
+      confidence: num(r.confidence),
+      urgency: r.urgency || "low",
+      signal: r.signal || "",
+      impact: r.impact || "",
+      reasoning: r.reasoning || "",
+      // The card reads `current` / `proposed` as free-form objects.
+      current: r.current_state || {},
+      proposed: r.proposed || {},
+      value: num(r.value_rand),
+      decision: r.decision || null,
+      decidedAt: r.decided_at || null,
+    }))
+    .sort((a, b) => {
+      const aDone = a.decision ? 1 : 0;
+      const bDone = b.decision ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+      return b.value - a.value;
+    });
+}
