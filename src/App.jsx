@@ -152,11 +152,15 @@ function offerStats(o) {
   const dailyAvg = sales30 / 30;
   const daysCover = dailyAvg > 0 ? Math.round(stock / dailyAvg) : 0;
   const targetStock = sales30;
+  // The app must never compute this — Python owns the payday-aware
+  // formula and stores it. Kept only so the sample-data path still has a
+  // number; every screen reads `pySendIn`.
   const sendIn = Math.max(0, targetStock - stock);
+  const pySendIn = o.sendIn ? o.sendIn.CPT + o.sendIn.JHB + o.sendIn.DBN : sendIn;
   // rrp can be 0/null in real offers_cache rows (it's one of the
   // TO CONFIRM fields), which produced NaN% / -Infinity% discounts.
   const discount = o.rrp > 0 ? Math.floor(((o.rrp - o.price) / o.rrp) * 100) : 0;
-  return { stock, sales30, dailyAvg: dailyAvg.toFixed(1), daysCover, targetStock, sendIn, discount };
+  return { stock, sales30, dailyAvg: dailyAvg.toFixed(1), daysCover, targetStock, sendIn, pySendIn, discount };
 }
 
 function cellFmt(v, c, money) {
@@ -1238,9 +1242,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               return (
                 <button key={o.sku} onClick={() => setOfferDetail(o)} style={{ width: "100%", textAlign: "left", background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 12, cursor: "pointer", fontFamily: FONT }}>
                   <div style={{ display: "flex", gap: 12 }}>
-                    <div style={{ width: 62, height: 62, borderRadius: 12, background: "linear-gradient(135deg, rgba(76,141,255,0.22), rgba(139,156,255,0.12))", border: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <Package size={26} color="rgba(255,255,255,0.5)" strokeWidth={1.8} />
-                    </div>
+                    <ProductImage src={o.imageUrl} size={62} iconSize={26} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 14.5, fontWeight: 600, color: "#fff", lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{o.title}</div>
                       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>SKU: {o.sku}</div>
@@ -1303,9 +1305,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
                 <Section pad={false}>
                   <div style={{ display: "flex", gap: 14 }}>
-                    <div style={{ width: 70, height: 70, borderRadius: 12, background: "linear-gradient(135deg, rgba(76,141,255,0.22), rgba(139,156,255,0.12))", border: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <Package size={30} color="rgba(255,255,255,0.5)" strokeWidth={1.8} />
-                    </div>
+                    <ProductImage src={o.imageUrl} size={70} iconSize={30} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 15.5, fontWeight: 700, color: "#fff", lineHeight: 1.3 }}>{o.title}</div>
                       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.45)", marginTop: 6, lineHeight: 1.7 }}>SKU: {o.sku}<br />Barcode: {o.barcode}<br />Label: {o.label}</div>
@@ -1330,7 +1330,11 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 </Section>
 
                 <Section title="Stock Recommendation">
-                  {statBox([{ label: "Daily Average", value: s.dailyAvg }, { label: "Target Stock", value: s.targetStock, color: "#4C8DFF" }, { label: "Send In", value: s.sendIn, color: WA }])}
+                  {/* Target and Send In both come from Python. This panel
+                      used to derive its own from 30-day sales, which
+                      disagreed with the Stock Replenishment report on 173
+                      of 418 offers — 2,182 units against the report's 597. */}
+                  {statBox([{ label: "Daily Average", value: s.dailyAvg }, { label: "Target Stock", value: o.targetStock ?? "—", color: "#4C8DFF" }, { label: "Send In", value: s.pySendIn, color: WA }])}
                 </Section>
 
                 <Section title="Distribution Centers">
@@ -1338,7 +1342,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 </Section>
 
                 <Section title="Stock On Hand" right={editLink}>
-                  {statBox([{ label: "Current Stock", value: o.dcs.CPT[0] }, { label: "Warehouse ID", value: o.warehouseId }])}
+                  {/* Total across CPT/JHB/DBN. This read CPT only, so any
+                      SKU held in Johannesburg or Durban showed 0 in stock
+                      while the panel above it showed the real figure. */}
+                  {statBox([{ label: "Current Stock", value: s.stock }, { label: "Warehouse ID", value: o.warehouseId }])}
                 </Section>
 
                 <Section title="Lead Time" right={editLink}>
@@ -1886,6 +1893,44 @@ function Toggle({ on, onClick, locked = false }) {
     <button onClick={locked ? undefined : onClick} disabled={locked} style={{ width: 48, height: 29, borderRadius: 15, border: "none", cursor: locked ? "default" : "pointer", background: on ? WA : "rgba(255,255,255,0.16)", position: "relative", transition: "background 0.2s ease", flexShrink: 0, padding: 0, opacity: locked ? 0.55 : 1 }}>
       <span style={{ position: "absolute", top: 3, left: on ? 22 : 3, width: 23, height: 23, borderRadius: 12, background: "#fff", transition: "left 0.2s cubic-bezier(0.4,0,0.2,1)", boxShadow: "0 1px 3px rgba(0,0,0,0.35)" }} />
     </button>
+  );
+}
+
+/**
+ * Product photo, falling back to the gradient tile it replaced.
+ *
+ * Three things this has to get right:
+ *  - `loading="lazy"`. The Offers list renders all 418 cards at once and
+ *    each cover is ~110 KB, so eager loading would pull ~46 MB over the
+ *    phone's data. Lazy means only what scrolls into view is fetched.
+ *  - `onError`. A dead or 403 cover would otherwise draw a broken-image
+ *    glyph; this puts the Package icon back instead.
+ *  - A neutral backdrop behind the image. The covers are letterboxed
+ *    JPEGs with white edges, so `contain` on a dark tile looks better
+ *    than `cover`, which crops the product.
+ */
+function ProductImage({ src, size, iconSize }) {
+  const [failed, setFailed] = useState(false);
+  const tile = {
+    width: size, height: size, borderRadius: 12, flexShrink: 0,
+    border: "1px solid rgba(255,255,255,0.08)",
+  };
+  if (!src || failed) {
+    return (
+      <div style={{ ...tile, background: "linear-gradient(135deg, rgba(76,141,255,0.22), rgba(139,156,255,0.12))", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Package size={iconSize} color="rgba(255,255,255,0.5)" strokeWidth={1.8} />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      style={{ ...tile, objectFit: "contain", background: "#fff" }}
+    />
   );
 }
 

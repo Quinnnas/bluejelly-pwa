@@ -138,7 +138,21 @@ export async function loadStoreData(now = Date.now()) {
   if (recsRes.error) errors.recommendations = recsRes.error.message;
 
   const rawSales = prepareSales(salesRes.data || []);
-  const costsBySku = new Map((costsRes.data || []).map((c) => [c.sku, c]));
+
+  // One cost record per SKU, assembled from two sources: the cost
+  // spreadsheet (sku_costs) for what the stock cost us, and offers_cache
+  // for `shipping_cost` — Takealot's "Cost to Ship to Takealot DC", which
+  // the sync now pulls from /offers/offer_charges. It appears in neither
+  // /offers nor /sales, so profit ran ~R8,600/month optimistic without it.
+  // Merged here rather than looked up separately so both the dashboard
+  // and the order list read one map and cannot drift apart.
+  const costsBySku = new Map((costsRes.data || []).map((c) => [c.sku, { ...c }]));
+  for (const o of offersRes.data || []) {
+    if (!o.sku) continue;
+    const entry = costsBySku.get(o.sku) || { sku: o.sku };
+    entry.shipping_cost = o.shipping_cost;
+    costsBySku.set(o.sku, entry);
+  }
 
   const targets = {};
   for (const t of targetsRes.data || []) {

@@ -315,6 +315,26 @@ test("product cost multiplies by quantity", () => {
   assert.equal(r.cost, 300);
   assert.equal(r.profit, 900 - 55 - 300);
 });
+test("shipping to the Takealot DC comes off profit, per unit", () => {
+  // "Cost to Ship to Takealot DC" — R20 on a heater, R2 on a vape. It is
+  // in neither /offers nor /sales; the sync reads it from
+  // /offers/offer_charges. Left out, profit ran ~R8,600/month optimistic.
+  const s = prepareSales([withFees("2026-08-15T08:00:00Z", {
+    quantity: 2, unit_price: 300, line_total: 600, status: "Shipped to Customer",
+  })]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100, shipping_cost: 20 }]]);
+  const r = buildRows(s, NOW, null, costs)[0];
+  assert.equal(r.cost, 240, "2 x (100 product + 20 shipping)");
+  assert.equal(r.profit, 600 - 55 - 240);
+});
+test("a SKU with no shipping cost is unchanged, not NaN", () => {
+  const s = prepareSales([withFees("2026-08-15T08:00:00Z", {
+    unit_price: 300, line_total: 300, status: "Shipped to Customer",
+  })]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100 }]]);
+  const r = buildRows(s, NOW, null, costs)[0];
+  assert.equal(r.cost, 100, "missing shipping is zero, and never poisons the sum");
+});
 test("the not-yet-banked hint is estimated at the observed rate", () => {
   const s = prepareSales([
     sale("2026-08-15T08:00:00Z", { id: "shipped", unit_price: 1000, success_fee: 200, status: "Shipped to Customer" }),
@@ -523,10 +543,20 @@ test("product cost covers the whole line, not one unit", () => {
   assert.equal(o.unitCost, 115, "per-unit kept separately");
   assert.equal(o.unit * o.qty, 400, "and it lines up with the sale value");
 });
+test("delivery cost covers the whole line and shows in the detail view", () => {
+  const s = prepareSales([sale("2026-08-15T08:00:00Z", {
+    sku: "ABC", quantity: 2, unit_price: 200, line_total: 400,
+  })]);
+  const costs = new Map([["ABC", { title: "T", cost_incl_vat: 115, shipping_cost: 20 }]]);
+  const o = buildOrders(s, costs)[0];
+  assert.equal(o.deliveryCost, 40, "2 units at R20, matching productCost's line-total shape");
+  assert.equal(o.productCost, 230, "and shipping is not folded into product cost");
+});
 test("a SKU with no cost row degrades instead of throwing", () => {
   const s = prepareSales([sale("2026-08-15T08:00:00Z", { sku: "UNKNOWN" })]);
   const o = buildOrders(s, new Map())[0];
   assert.equal(o.productCost, 0);
+  assert.equal(o.deliveryCost, 0);
   assert.equal(o.title, "UNKNOWN");
 });
 test("missing fees become 0, never undefined", () => {
@@ -554,6 +584,37 @@ test("an offer missing the 005/006 columns defaults to 0, not NaN", () => {
   assert.equal(o.tsin, "—", "renders a dash, never 'undefined'");
   assert.equal(o.leadTime, "Disabled");
   assert.equal(o.storageEligible, false);
+});
+test("target stock comes from Python, not a second formula in JS", () => {
+  // The Offer Details screen used to derive its own target from 30-day
+  // sales. That ignored lead time, the payday multiplier, the trend factor
+  // and the cover cap, and disagreed with the Send In beside it on 173 of
+  // 418 offers. Null until migration 010 has run — the screen shows "—".
+  const [o] = buildOffers([{ sku: "ABC", target_stock: 12, send_in_jhb: 4 }]);
+  assert.equal(o.targetStock, 12);
+  assert.equal(o.sendIn.JHB, 4);
+  assert.equal(buildOffers([{ sku: "ABC" }])[0].targetStock, null);
+});
+test("target stock of 0 stays 0 and does not become null", () => {
+  assert.equal(buildOffers([{ sku: "ABC", target_stock: 0 }])[0].targetStock, 0);
+});
+test("cover images are upgraded to https", () => {
+  // Takealot stores these as http://. The app is https on Vercel, which
+  // blocks http subresources as mixed content — the tile just stays empty,
+  // with no error to notice.
+  const [o] = buildOffers([{
+    sku: "ABC",
+    image_url: "http://takealot.s3.amazonaws.com/covers_images/abc/s.file",
+  }]);
+  assert.equal(o.imageUrl, "https://takealot.s3.amazonaws.com/covers_images/abc/s.file");
+});
+test("an offer with no cover image gives null, not the string 'null'", () => {
+  assert.equal(buildOffers([{ sku: "ABC" }])[0].imageUrl, null);
+  assert.equal(buildOffers([{ sku: "ABC", image_url: "" }])[0].imageUrl, null);
+});
+test("an https cover image is left alone", () => {
+  const [o] = buildOffers([{ sku: "ABC", image_url: "https://x.com/a/s.file" }]);
+  assert.equal(o.imageUrl, "https://x.com/a/s.file");
 });
 test("real Takealot offer fields surface on the Offers screen", () => {
   const [o] = buildOffers([{

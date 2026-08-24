@@ -168,7 +168,11 @@ function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate) {
     // must not overlap: preparing + shipped === qty. `qty` stays the
     // total, because Sales Value, average order value and the hero are
     // all computed against every unit sold, dispatched or not.
-    const unitCost = num(costsBySku.get(s.sku)?.cost_incl_vat) * num(s.quantity);
+    // Landed cost: what the stock cost us plus what it cost to get it
+    // into Takealot's warehouse. Shipping is per unit, same as product
+    // cost, so both scale with quantity.
+    const c = costsBySku.get(s.sku);
+    const unitCost = (num(c?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
 
     if (orderStatusKey(s.status) === "shipped") {
       shippedQty += num(s.quantity);
@@ -363,11 +367,12 @@ export function buildOrders(sales, costsBySku) {
         // calculation written twice and disagreeing.
         productCost: num(cost?.cost_incl_vat) * (num(s.quantity) || 1),
         unitCost: num(cost?.cost_incl_vat),
-        // Takealot's per-unit shipping charge is not in the /sales API.
-        // The weekly report subtracts one (R2 for most vapes, up to R30
-        // for large items) but its source has not been identified yet, so
-        // this stays zero rather than guessing. See NOTES.md.
-        deliveryCost: 0,
+        // "Cost to Ship to Takealot DC", per unit, from
+        // /offers/offer_charges via offers_cache. R2 for most vapes, R20
+        // for heaters — it matches the portal's own profit calculator.
+        // Line-total like productCost, since the detail view compares it
+        // against unit x qty.
+        deliveryCost: num(cost?.shipping_cost) * (num(s.quantity) || 1),
         // Takealot only populates fees once an order ships — exactly the
         // "Fees Pending" state the detail view already draws.
         fees: {
@@ -378,6 +383,19 @@ export function buildOrders(sales, costsBySku) {
         },
       };
     });
+}
+
+/**
+ * Takealot serves cover images from S3 over plain `http://`.
+ *
+ * The app is https on Vercel, so a browser blocks those as mixed content
+ * and the tile silently stays empty — no error, just no picture. The same
+ * URL answers fine over https, so upgrade the scheme here rather than
+ * re-syncing 418 rows. Applied on read so every row already in
+ * offers_cache is covered without waiting for a sync.
+ */
+function secureImageUrl(url) {
+  return url ? String(url).replace(/^http:\/\//i, "https://") : null;
 }
 
 /** Offers list. Shaped like the old OFFERS sample array. */
@@ -394,7 +412,7 @@ export function buildOffers(offers) {
     tsin: o.tsin ?? "—",
     offerId: o.offer_id ?? "—",
     offerUrl: o.offer_url || null,
-    imageUrl: o.image_url || null,
+    imageUrl: secureImageUrl(o.image_url),
     // The Offers screen labels this "Warehouse ID"; the offer_id is the
     // identifier Takealot actually exposes and the one that's useful.
     warehouseId: o.offer_id ?? "—",
@@ -412,6 +430,9 @@ export function buildOffers(offers) {
     onWay: { CPT: num(o.on_way_cpt), JHB: num(o.on_way_jhb), DBN: num(o.on_way_dbn) },
     // Straight from Python — the canonical payday-aware formula.
     sendIn: { CPT: num(o.send_in_cpt), JHB: num(o.send_in_jhb), DBN: num(o.send_in_dbn) },
+    // Also Python's. Null until migration 010 has run and a sync has
+    // written it, which the screen shows as "—" rather than inventing one.
+    targetStock: o.target_stock ?? null,
     trendFactor: o.trend_factor ?? 1,
     syncedAt: o.synced_at || null,
   }));

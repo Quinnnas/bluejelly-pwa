@@ -8,3 +8,6 @@ dist-ssr/
 
 # vite-plugin-pwa dev output — build artefact, never commit
 dev-dist/
+
+# local dev-server launch config, not part of the app
+.claude/
