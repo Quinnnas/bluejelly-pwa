@@ -459,6 +459,12 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [offerSearch, setOfferSearch] = useState("");
   const [orderDetail, setOrderDetail] = useState(null);
   const [orderFilter, setOrderFilter] = useState("all");
+  // Rendering every order put 9,020 cards and 142,000 DOM nodes on the
+  // page at once — fine on a laptop, punishing on a phone. Show a page at
+  // a time instead; the filter counts above still reflect everything.
+  const ORDERS_PAGE = 100;
+  const [orderLimit, setOrderLimit] = useState(ORDERS_PAGE);
+  useEffect(() => { setOrderLimit(ORDERS_PAGE); }, [orderFilter]);
   const [feesVat, setFeesVat] = useState(true);
   const [profitVat, setProfitVat] = useState(true);
   const [bbFilter, setBbFilter] = useState("all");
@@ -1393,7 +1399,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* list */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
-            {liveOrders.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).map((o) => {
+            {liveOrders.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).slice(0, orderLimit).map((o) => {
               const st = ORDER_STATUS[o.status];
               // Keyed on orderItemId, not id: one order can hold several
               // line items, so `id` (the order number) repeats and React
@@ -1418,6 +1424,23 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 </button>
               );
             })}
+            {(() => {
+              const shown = Math.min(orderLimit, liveOrders.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).length);
+              const total = liveOrders.filter((o) => orderFilter === "all" ? true : o.status === orderFilter).length;
+              if (total === 0) return null;
+              return (
+                <div style={{ padding: "4px 0 8px", textAlign: "center" }}>
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", marginBottom: shown < total ? 10 : 0, ...NUM }}>
+                    Showing {shown.toLocaleString("en-US")} of {total.toLocaleString("en-US")}
+                  </div>
+                  {shown < total && (
+                    <button onClick={() => setOrderLimit((n) => n + ORDERS_PAGE)} style={{ padding: "10px 20px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.85)", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
+                      Load {Math.min(ORDERS_PAGE, total - shown)} more
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -1433,7 +1456,14 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           const dcost = vat(o.deliveryCost, profitVat);
           const suc = vat(f.success, profitVat);
           const ful = vat(f.fulfillment, profitVat);
-          const gross = sell - pcost - dcost - suc - ful;
+          const cour = vat(f.courier, profitVat);
+          const xfer = vat(f.stockTransfer, profitVat);
+          // Every fee the breakdown above charges must come off here too.
+          // This previously subtracted only success + fulfilment, which
+          // was invisible while the sample orders had zero courier and
+          // stock-transfer fees. Against real data it overstated profit
+          // on 498 orders by R13,381 — up to 11% of a single sale.
+          const gross = sell - pcost - dcost - suc - ful - cour - xfer;
           const margin = sell ? ((gross / sell) * 100).toFixed(1) : "0.0";
           const st = ORDER_STATUS[o.status];
           return (
@@ -1534,6 +1564,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                       <InfoRow label="Delivery Cost" value={rand(dcost)} top />
                       <InfoRow label="Success Fee" value={rand(suc)} top />
                       <InfoRow label="Fulfilment Fee" value={rand(ful)} top />
+                      {/* Shown only when charged, so the common order stays
+                          uncluttered — but they are always deducted. */}
+                      {cour > 0 && <InfoRow label="Courier Collection Fee" value={rand(cour)} top />}
+                      {xfer > 0 && <InfoRow label="Stock Transfer Fee" value={rand(xfer)} top />}
                       <InfoRow label="Gross Profit" value={rand(gross)} color={gross >= 0 ? WA : "#F87171"} bold top />
                       <InfoRow label="Profit Margin" value={margin + "%"} color={gross >= 0 ? WA : "#F87171"} bold top />
                     </>
