@@ -356,7 +356,17 @@ export function buildOrders(sales, costsBySku) {
         customer: s.customer_name || "—",
         orderDC: s.order_dc || s.customer_dc || "—",
         customerDC: s.customer_dc || "—",
-        productCost: num(cost?.cost_incl_vat),
+        // Cost of the WHOLE line, not one unit. `sell` in the detail
+        // view is unit x qty, so a per-unit cost here under-counted every
+        // multi-unit order — a 2-unit line deducted one unit's cost.
+        // buildRows (the dashboard) already multiplied; this is the same
+        // calculation written twice and disagreeing.
+        productCost: num(cost?.cost_incl_vat) * (num(s.quantity) || 1),
+        unitCost: num(cost?.cost_incl_vat),
+        // Takealot's per-unit shipping charge is not in the /sales API.
+        // The weekly report subtracts one (R2 for most vapes, up to R30
+        // for large items) but its source has not been identified yet, so
+        // this stays zero rather than guessing. See NOTES.md.
         deliveryCost: 0,
         // Takealot only populates fees once an order ships — exactly the
         // "Fees Pending" state the detail view already draws.

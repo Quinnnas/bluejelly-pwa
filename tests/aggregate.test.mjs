@@ -510,6 +510,19 @@ test("product cost joins from sku_costs", () => {
   assert.equal(o.title, "Elf Bar Grape");
   assert.equal(o.productCost, 120);
 });
+test("product cost covers the whole line, not one unit", () => {
+  // The detail view compares cost against unit x qty, so a per-unit cost
+  // here under-counted every multi-unit order. buildRows already
+  // multiplied — the same sum written twice and disagreeing.
+  const s = prepareSales([sale("2026-08-15T08:00:00Z", {
+    sku: "ABC", quantity: 2, unit_price: 200, line_total: 400,
+  })]);
+  const costs = new Map([["ABC", { title: "T", cost_incl_vat: 115 }]]);
+  const o = buildOrders(s, costs)[0];
+  assert.equal(o.productCost, 230, "2 units at R115, not R115");
+  assert.equal(o.unitCost, 115, "per-unit kept separately");
+  assert.equal(o.unit * o.qty, 400, "and it lines up with the sale value");
+});
 test("a SKU with no cost row degrades instead of throwing", () => {
   const s = prepareSales([sale("2026-08-15T08:00:00Z", { sku: "UNKNOWN" })]);
   const o = buildOrders(s, new Map())[0];
