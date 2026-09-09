@@ -134,7 +134,7 @@ export function observedFeeRate(sales) {
  * further back is genuinely incomplete and gets flagged `partial` rather
  * than quietly under-reporting.
  */
-function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate) {
+function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate, costHistory = new Map()) {
   let qty = 0;
   let value = 0;
   let placedQty = 0;
@@ -171,8 +171,13 @@ function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate) {
     // Landed cost: what the stock cost us plus what it cost to get it
     // into Takealot's warehouse. Shipping is per unit, same as product
     // cost, so both scale with quantity.
+    //
+    // Product cost is read AT THE SALE'S DATE, so a spreadsheet update
+    // stops rewriting last month's profit. Shipping has no history — it
+    // comes from the live offer — so it stays current.
     const c = costsBySku.get(s.sku);
-    const unitCost = (num(c?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
+    const at = costAt(costHistory, c, s.sku, s._date);
+    const unitCost = (num(at?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
 
     if (orderStatusKey(s.status) === "shipped") {
       shippedQty += num(s.quantity);
@@ -248,7 +253,7 @@ function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate) {
  * expanded row shows so a finished period can be read against the
  * current one.
  */
-export function buildRows(sales, now = Date.now(), coverageStart = null, costsBySku = new Map()) {
+export function buildRows(sales, now = Date.now(), coverageStart = null, costsBySku = new Map(), costHistory = new Map()) {
   // Orders arrive as "Preparing for Customer" and become "Shipped to
   // Customer" within a day or two; Takealot only charges its fees at that
   // point. Fees on unshipped orders are therefore estimated at the rate
@@ -279,9 +284,9 @@ export function buildRows(sales, now = Date.now(), coverageStart = null, costsBy
   ];
 
   return windows.map((w) => {
-    const row = computeWindow(sales, w, coverageStart, costsBySku, fallbackRate);
+    const row = computeWindow(sales, w, coverageStart, costsBySku, fallbackRate, costHistory);
     if (w.companion) {
-      row.companion = computeWindow(sales, w.companion, coverageStart, costsBySku, fallbackRate);
+      row.companion = computeWindow(sales, w.companion, coverageStart, costsBySku, fallbackRate, costHistory);
     }
     return row;
   });
@@ -323,13 +328,16 @@ export function buildSeries(sales, now = Date.now()) {
 }
 
 /** Orders list, newest first. Shaped like the old ORDERS sample array. */
-export function buildOrders(sales, costsBySku) {
+export function buildOrders(sales, costsBySku, costHistory = new Map()) {
   return sales
     .filter((s) => s._date)
     .slice()
     .sort((a, b) => b._date - a._date)
     .map((s) => {
-      const cost = costsBySku.get(s.sku);
+      const current = costsBySku.get(s.sku);
+      // Priced at the sale's own date, so reopening a July order shows
+      // what it actually cost in July.
+      const cost = { ...current, ...costAt(costHistory, current, s.sku, s._date) };
       // Rendered in SAST so timestamps match the Takealot seller portal.
       const sast = new Date(s._date.getTime() + SAST_OFFSET_MS);
       const dd = String(sast.getUTCDate()).padStart(2, "0");
@@ -396,6 +404,63 @@ export function buildOrders(sales, costsBySku) {
  */
 function secureImageUrl(url) {
   return url ? String(url).replace(/^http:\/\//i, "https://") : null;
+}
+
+/**
+ * What a SKU cost on a given day.
+ *
+ * `sku_costs` holds one current cost per SKU with no date on it, so before
+ * this existed every sale was priced at whatever sat in that table right
+ * now. Importing the September spreadsheet moved August's gross profit
+ * from R125,702 to R139,240 on identical sales and identical fees, purely
+ * because Nasty 9K went from R162 to R159 — August was being reported at
+ * September's prices.
+ *
+ * `history` is a Map of sku -> change points sorted oldest first. Points
+ * are sparse: a SKU appears only in the months its cost actually moved, so
+ * the answer is the last point at or before the sale's date.
+ *
+ * `fallback` is the current `sku_costs` row, used for sales older than the
+ * earliest point (the archive only goes back to July 2026) and for SKUs
+ * that have no history at all. That is the old behaviour, now confined to
+ * the cases where nothing better exists.
+ */
+export function costAt(history, fallback, sku, when) {
+  const points = history.get(sku);
+  if (!points || !points.length) return fallback;
+  if (!when) return points[points.length - 1];
+
+  const t = when instanceof Date ? when.getTime() : new Date(when).getTime();
+  // Scanning backwards: a SKU has a handful of points at most, and the
+  // sales being priced are usually recent, so the answer is near the end.
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i]._from <= t) return points[i];
+  }
+  // Older than anything on record. The earliest known cost beats the
+  // current one — it is at least closer in time to the sale.
+  return points[0];
+}
+
+/**
+ * Index change-point rows by SKU, oldest first, with the date parsed once.
+ *
+ * `valid_from` is a bare date (2026-08-01). Parsed as SAST midnight rather
+ * than UTC, so a sale at 01:30 on the 1st is not priced at the previous
+ * month's cost.
+ */
+export function buildCostHistory(rows = []) {
+  const bySku = new Map();
+  for (const r of rows) {
+    if (!r.sku || !r.valid_from) continue;
+    const list = bySku.get(r.sku) || [];
+    list.push({
+      ...r,
+      _from: new Date(`${String(r.valid_from).slice(0, 10)}T00:00:00+02:00`).getTime(),
+    });
+    bySku.set(r.sku, list);
+  }
+  for (const list of bySku.values()) list.sort((a, b) => a._from - b._from);
+  return bySku;
 }
 
 /** Offers list. Shaped like the old OFFERS sample array. */

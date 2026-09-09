@@ -16,6 +16,7 @@ import {
   buildOffers,
   buildOrders,
   buildReturns,
+  buildCostHistory,
   buildRows,
   buildSeries,
   prepareSales,
@@ -107,15 +108,40 @@ async function fetchAllSales(since) {
   return { data: all, error: null };
 }
 
+/**
+ * Every cost change point, paged past the 1000-row cap.
+ *
+ * Never throws: migration 012 may not have run, and the app must fall
+ * back to current costs rather than showing nothing.
+ */
+async function fetchCostHistory() {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("sku_cost_history")
+      .select("sku, valid_from, cost_incl_vat, cost_excl_vat, min_price, max_price")
+      .order("valid_from", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error || !data) return out;
+    out.push(...data);
+    if (data.length < PAGE) return out;
+  }
+}
+
 export async function loadStoreData(now = Date.now()) {
   const since = historyStart(now).toISOString();
 
-  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, returnsRes, recsRes] = await Promise.all([
+  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, historyRows, returnsRes, recsRes] = await Promise.all([
     fetchAllSales(since),
     supabase.from("offers_cache").select("*").order("sku"),
     supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat, min_price, max_price"),
     supabase.from("targets").select("period, sales_value"),
     fetchCoverageStart(),
+    // Cost change points. ~630 rows today and growing ~130 a month, so
+    // this pages rather than trusting it to stay under PostgREST's
+    // silent 1000-row cap.
+    fetchCostHistory(),
     // Returns carry everything /sales does not: reason, outcome, RRN, the
     // customer's comment and the money. Windowed to match the sales load,
     // or a rate would compare a year of returns against a month of sales.
@@ -173,6 +199,8 @@ export async function loadStoreData(now = Date.now()) {
     targets[t.period] = typeof t.sales_value === "number" ? t.sales_value : 0;
   }
 
+  const costHistory = buildCostHistory(historyRows);
+
   const offers = buildOffers(offersRes.data || []);
   const lastSync = offers.reduce(
     (acc, o) => (o.syncedAt && (!acc || o.syncedAt > acc) ? o.syncedAt : acc),
@@ -180,9 +208,9 @@ export async function loadStoreData(now = Date.now()) {
   );
 
   return {
-    rows: buildRows(rawSales, now, coverageStart, costsBySku),
+    rows: buildRows(rawSales, now, coverageStart, costsBySku, costHistory),
     series: buildSeries(rawSales, now),
-    orders: buildOrders(rawSales, costsBySku),
+    orders: buildOrders(rawSales, costsBySku, costHistory),
     returns: buildReturns(returnsRes.data || [], rawSales, costsBySku),
     offers,
     // Kept so the report builders can re-bucket by real dates rather than

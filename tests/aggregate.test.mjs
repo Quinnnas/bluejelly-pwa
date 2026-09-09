@@ -12,6 +12,8 @@
 import assert from "node:assert/strict";
 import {
   buildOffers,
+  buildCostHistory,
+  costAt,
   buildReturns,
   isQualityReturn,
   buildOrders,
@@ -782,6 +784,94 @@ test("isQualityReturn only counts the two product faults", () => {
   for (const r of ["Customer Cancellation", "Failed delivery", "Exception", "Changed my mind", null]) {
     assert.equal(isQualityReturn(r), false, r + " is not a product fault");
   }
+});
+
+const HIST = () => buildCostHistory([
+  { sku: "A", valid_from: "2026-07-01", cost_incl_vat: 162 },
+  { sku: "A", valid_from: "2026-09-01", cost_incl_vat: 159 },
+  { sku: "B", valid_from: "2026-08-01", cost_incl_vat: 50 },
+]);
+
+test("a sale is priced at the cost in force on its own date", () => {
+  // The whole point. Importing September's spreadsheet moved August's
+  // gross profit from R125,702 to R139,240 on identical sales, because
+  // every sale was priced at whatever sat in sku_costs right now.
+  const h = HIST();
+  const at = (d) => costAt(h, { cost_incl_vat: 999 }, "A", new Date(d)).cost_incl_vat;
+  assert.equal(at("2026-07-15T10:00:00+02:00"), 162, "July");
+  assert.equal(at("2026-08-31T23:59:00+02:00"), 162, "still August, still the old cost");
+  assert.equal(at("2026-09-01T00:30:00+02:00"), 159, "the change applies from the 1st");
+  assert.equal(at("2026-09-09T10:00:00+02:00"), 159, "September");
+});
+test("history is skipped when a SKU has none", () => {
+  assert.equal(costAt(HIST(), { cost_incl_vat: 77 }, "UNKNOWN", new Date("2026-08-15")).cost_incl_vat, 77);
+  assert.equal(costAt(new Map(), { cost_incl_vat: 77 }, "A", new Date("2026-08-15")).cost_incl_vat, 77);
+});
+test("a sale older than every change point uses the earliest known cost", () => {
+  // The archive only reaches July 2026; February sales have no record of
+  // what they actually cost. The oldest point beats today's price.
+  const got = costAt(HIST(), { cost_incl_vat: 999 }, "A", new Date("2026-02-15T10:00:00+02:00"));
+  assert.equal(got.cost_incl_vat, 162, "July's cost, not the current one");
+});
+test("valid_from is read as SAST midnight, not UTC", () => {
+  // 01:30 SAST on the 1st is 23:30 UTC on the previous day. Parsed as UTC
+  // this priced the first ninety minutes of every month at the old cost.
+  const at = costAt(HIST(), null, "A", new Date("2026-09-01T01:30:00+02:00"));
+  assert.equal(at.cost_incl_vat, 159);
+});
+test("a sale with no date falls back to the latest point", () => {
+  assert.equal(costAt(HIST(), null, "A", null).cost_incl_vat, 159);
+});
+test("buildCostHistory sorts change points oldest first", () => {
+  const h = buildCostHistory([
+    { sku: "A", valid_from: "2026-09-01", cost_incl_vat: 159 },
+    { sku: "A", valid_from: "2026-07-01", cost_incl_vat: 162 },
+  ]);
+  assert.deepEqual(h.get("A").map((p) => p.cost_incl_vat), [162, 159]);
+});
+test("rows missing a sku or date are dropped, not stored as undefined", () => {
+  const h = buildCostHistory([
+    { sku: "A", valid_from: null, cost_incl_vat: 1 },
+    { sku: null, valid_from: "2026-07-01", cost_incl_vat: 2 },
+  ]);
+  assert.equal(h.size, 0);
+});
+test("the dashboard prices August at August's cost, not today's", () => {
+  const sales = prepareSales([
+    withFees("2026-08-15T08:00:00Z", { quantity: 1, unit_price: 300, line_total: 300, status: "Shipped to Customer" }),
+  ]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 159, shipping_cost: 0 }]]);
+  const hist = buildCostHistory([
+    { sku: "SKU1", valid_from: "2026-07-01", cost_incl_vat: 162 },
+    { sku: "SKU1", valid_from: "2026-09-01", cost_incl_vat: 159 },
+  ]);
+  const withHistory = buildRows(sales, NOW, null, costs, hist)[0];
+  const withoutHistory = buildRows(sales, NOW, null, costs)[0];
+  assert.equal(withHistory.cost, 162, "the cost in force in August");
+  assert.equal(withoutHistory.cost, 159, "the old behaviour, for contrast");
+  assert.equal(withHistory.profit, 300 - 55 - 162);
+});
+test("shipping cost stays current — it has no history", () => {
+  const sales = prepareSales([
+    withFees("2026-08-15T08:00:00Z", { quantity: 2, unit_price: 300, line_total: 600, status: "Shipped to Customer" }),
+  ]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100, shipping_cost: 20 }]]);
+  const hist = buildCostHistory([{ sku: "SKU1", valid_from: "2026-07-01", cost_incl_vat: 90 }]);
+  const r = buildRows(sales, NOW, null, costs, hist)[0];
+  assert.equal(r.cost, 2 * (90 + 20), "July's product cost, today's shipping");
+});
+test("an order opened months later shows what it cost then", () => {
+  const sales = prepareSales([sale("2026-08-15T08:00:00Z", { sku: "A", quantity: 2, unit_price: 200, line_total: 400 })]);
+  const costs = new Map([["A", { title: "T", cost_incl_vat: 159, shipping_cost: 20 }]]);
+  const hist = buildCostHistory([
+    { sku: "A", valid_from: "2026-07-01", cost_incl_vat: 162 },
+    { sku: "A", valid_from: "2026-09-01", cost_incl_vat: 159 },
+  ]);
+  const o = buildOrders(sales, costs, hist)[0];
+  assert.equal(o.unitCost, 162, "August's cost");
+  assert.equal(o.productCost, 324, "2 units at August's cost");
+  assert.equal(o.deliveryCost, 40, "shipping still current, and still per line");
+  assert.equal(o.title, "T", "fields with no history still come from sku_costs");
 });
 
 console.log(
