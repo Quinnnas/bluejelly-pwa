@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { loadStoreData, buildReportDefs } from "./lib/data";
+import { isQualityReturn } from "./lib/aggregate";
 import {
   Bell,
   ChevronRight,
@@ -31,6 +32,8 @@ import {
   Lock,
   ArrowRight,
   Crosshair,
+  RotateCcw,
+  MessageSquare,
   Crown,
   Pencil,
   Truck,
@@ -145,6 +148,22 @@ const OFFER_STATUS = {
   disabled: { label: "Disabled", color: "#F87171" },
 };
 // Sample OFFERS removed — the Offers screen now reads offers_cache.
+
+/**
+ * Which offers a given filter chip shows.
+ *
+ * "Active" deliberately leaves out disabled listings. They are dead weight
+ * on this screen — every one is R0 with no stock — and because their SKUs
+ * are barcode numbers they sort ahead of the lettered ones, so the tab
+ * used to open on a screenful of them. The Disabled chip still reaches
+ * them; nothing is hidden, it is just no longer the first thing you see.
+ *
+ * Used by both the chip counts and the list itself, so the number on the
+ * chip cannot drift from the rows underneath it.
+ */
+function matchesOfferFilter(offer, filter) {
+  return filter === "active" ? offer.status !== "disabled" : offer.status === filter;
+}
 function offerStats(o) {
   const dc = o.dcs;
   const stock = dc.CPT[0] + dc.JHB[0] + dc.DBN[0];
@@ -305,6 +324,11 @@ const EMPTY_DATA = Object.freeze({
   ],
   series: { today: [0, 0], week: [0, 0], month: [0, 0] },
   orders: [], offers: [], rawSales: [], targets: {}, recommendations: [],
+  returns: {
+    lines: 0, units: 0, defectUnits: 0, cancelUnits: 0, otherUnits: 0,
+    value: 0, netValue: 0, sold: 0, rate: 0, defectRate: 0, removals: 0,
+    byReason: [], byOutcome: [], products: [], items: [],
+  },
   lastSync: null, counts: { sales: 0, offers: 0, costs: 0 }, empty: true, errors: {},
 });
 
@@ -458,8 +482,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const salesOpsApprovedToday = liveRecs.filter((r) => decisionOf(r) === "approved").length;
   const [ordersOpen, setOrdersOpen] = useState(false);
   const [offersOpen, setOffersOpen] = useState(false);
+  const [returnsOpen, setReturnsOpen] = useState(false);
+  const [returnsTab, setReturnsTab] = useState("products");
+  const RETURNS_PAGE = 100;
+  const [returnLimit, setReturnLimit] = useState(RETURNS_PAGE);
+  const [returnDetail, setReturnDetail] = useState(null);
   const [offerDetail, setOfferDetail] = useState(null);
-  const [offerFilter, setOfferFilter] = useState("all");
+  const [offerFilter, setOfferFilter] = useState("active");
   const [offerSearch, setOfferSearch] = useState("");
   const [orderDetail, setOrderDetail] = useState(null);
   const [orderFilter, setOrderFilter] = useState("all");
@@ -469,6 +498,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const ORDERS_PAGE = 100;
   const [orderLimit, setOrderLimit] = useState(ORDERS_PAGE);
   useEffect(() => { setOrderLimit(ORDERS_PAGE); }, [orderFilter]);
+  useEffect(() => { setReturnLimit(RETURNS_PAGE); }, [returnsTab]);
   const [feesVat, setFeesVat] = useState(true);
   const [profitVat, setProfitVat] = useState(true);
   const [bbFilter, setBbFilter] = useState("all");
@@ -563,6 +593,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { label: "Dashboard", icon: LayoutGrid },
     { label: "Orders", icon: Package },
     { label: "Offers", icon: Tag },
+    { label: "Returns", icon: RotateCcw },
     { label: "Reconciliation", icon: FileText },
     { label: "Sales Ops", icon: Briefcase },
     { label: "Buy Box Tracking", icon: Crosshair },
@@ -786,12 +817,15 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
 
           {/* table — dark glass panel */}
           <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, borderRadius: 20, border: "1px solid " + PANEL_BORDER, boxShadow: "0 12px 34px rgba(12,15,20,0.22), inset 0 1px 0 rgba(255,255,255,0.05)", overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 6, padding: "16px 18px 13px", borderBottom: "1px solid " + PANEL_HAIR }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 9, padding: "16px 18px 13px", borderBottom: "1px solid " + PANEL_HAIR }}>
               <span style={thDark} />
               <span style={{ ...thDark, textAlign: "right", whiteSpace: "nowrap" }} title="Units still Preparing for customer — ordered, not yet dispatched">Prep</span>
               <span style={{ ...thDark, textAlign: "right", whiteSpace: "nowrap" }} title="Units already Shipped to customer">Ship</span>
-              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }}>Sales Value</span>
-              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }} title="Shipped units only, after Takealot fees and product cost. Undispatched orders are not counted.">Gross Profit</span>
+              {/* Short headers so four columns fit without squeezing the
+                  period label — "Yesterday" and "Last week" were being
+                  truncated to make room. The full meaning is on hover. */}
+              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }} title="Value of every unit sold in the period, dispatched or not">Sale</span>
+              <span style={{ ...thDark, whiteSpace: "nowrap", textAlign: "right" }} title="Shipped units only, after Takealot fees and product cost. Undispatched orders are not counted.">Gross</span>
               <span />
             </div>
             {liveRows.map((r, i) => {
@@ -801,7 +835,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               const a = r.qty > 0 ? Math.round(r.value / r.qty) : 0;
               return (
                 <div key={r.label} style={{ borderTop: i === 0 ? "none" : "1px solid " + PANEL_HAIR }}>
-                  <button onClick={() => setOpen(isOpen ? null : i)} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 6, alignItems: "center", padding: "17px 18px", border: "none", background: "transparent", textAlign: "left", cursor: "pointer" }}>
+                  <button onClick={() => setOpen(isOpen ? null : i)} style={{ width: "100%", display: "grid", gridTemplateColumns: "minmax(0,1fr) 0.3fr 0.46fr 0.86fr 0.86fr 12px", columnGap: 9, alignItems: "center", padding: "17px 18px", border: "none", background: "transparent", textAlign: "left", cursor: "pointer" }}>
                     <span style={{ fontSize: 14.5, color: "rgba(255,255,255,0.95)", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {r.short || r.label}
                       {/* The sync keeps a rolling window, so wider periods
@@ -816,12 +850,12 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                         warehouse is visible at a glance. */}
                     <span style={{ fontSize: 14, color: r.preparingQty > 0 ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.25)", fontWeight: 400, whiteSpace: "nowrap", textAlign: "right", ...NUM }} title={r.preparingQty > 0 ? `${r.preparingQty} units awaiting dispatch (${rand(r.preparingValue)})` : "Everything dispatched"}>{r.preparingQty.toLocaleString("en-US")}</span>
                     <span style={{ fontSize: 14, color: r.shippedQty > 0 ? "#4C8DFF" : "rgba(255,255,255,0.25)", fontWeight: r.shippedQty > 0 ? 700 : 400, whiteSpace: "nowrap", textAlign: "right", ...NUM }} title={`${r.shippedQty} shipped of ${r.qty} sold`}>{r.shippedQty.toLocaleString("en-US")}</span>
-                    <span style={{ fontSize: 14, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>{rand(r.value)}</span>
+                    <span style={{ fontSize: 13.5, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>{rand(r.value)}</span>
                     {/* Net of Takealot's fees and product cost. Fees on
                         orders that haven't shipped are estimated, so this
                         stays realistic on a day where much of the book is
                         still "Preparing" — the dot marks that. */}
-                    <span style={{ fontSize: 14, color: r.profit >= 0 ? POS : "#F87171", fontWeight: 700, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>
+                    <span style={{ fontSize: 13.5, color: r.profit >= 0 ? POS : "#F87171", fontWeight: 700, whiteSpace: "nowrap", textAlign: "right", ...NUM }}>
                       {rand(r.profit)}
                     </span>
                     <ChevronRight size={17} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ justifySelf: "end", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
@@ -968,7 +1002,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 );
               }
               return (
-                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
+                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (m.label === "Returns") setReturnsOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
                   <Icon size={20} strokeWidth={2} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
                   {m.label}
                   {m.label === "Sales Ops" && salesOpsPending > 0 && (
@@ -1209,6 +1243,248 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
         </div>
 
+
+        {/* Returns page */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: returnsOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 16px 12px" }}>
+            <button onClick={() => setReturnsOpen(false)} style={{ width: 38, height: 38, borderRadius: 19, background: "rgba(255,255,255,0.07)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <ChevronLeft size={20} color="#fff" strokeWidth={2.4} />
+            </button>
+            <span style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Returns</span>
+          </div>
+
+          <div style={{ padding: "0 16px 12px" }}>
+            <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 16 }}>
+              {/* The headline is the DEFECT rate, not the return rate.
+                  Takealot's 7.5% SLA is measured on faults, and most
+                  returns here are customer cancellations, which say
+                  nothing about the product. */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontSize: 12, letterSpacing: "0.8px", textTransform: "uppercase", color: "rgba(255,255,255,0.5)", fontWeight: 600 }}>Defect rate</div>
+                  <div style={{ fontSize: 40, fontWeight: 800, color: D.returns.defectRate >= RETURN_SLA ? "#F87171" : "#25D366", letterSpacing: "-1px", marginTop: 6, ...NUM }}>{D.returns.defectRate}%</div>
+                </div>
+                <div style={{ textAlign: "right", fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.7 }}>
+                  <div><span style={{ color: "#F87171", fontWeight: 700, ...NUM }}>{D.returns.defectUnits}</span> faulty</div>
+                  <div><span style={{ color: "rgba(255,255,255,0.8)", fontWeight: 700, ...NUM }}>{D.returns.cancelUnits}</span> cancelled</div>
+                  <div><span style={{ color: "#fff", fontWeight: 700, ...NUM }}>{D.returns.sold}</span> units out</div>
+                </div>
+              </div>
+              <SlaBar value={D.returns.defectRate} />
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                {[
+                  { label: "Returned", value: rand(D.returns.value) },
+                  { label: "Fees back", value: rand(D.returns.value + D.returns.netValue) },
+                  { label: "Removals", value: D.returns.removals, color: D.returns.removals ? "#F2C14E" : "#fff" },
+                ].map((c) => (
+                  <div key={c.label} style={{ flex: 1, background: "rgba(255,255,255,0.04)", borderRadius: 12, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>{c.label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: c.color || "#fff", marginTop: 2, ...NUM }}>{c.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 12, lineHeight: 1.5 }}>
+                {D.returns.lines} {D.returns.lines === 1 ? "return" : "returns"} in this period. Takealot credits the sale and both fees back, so the cost is the margin, not the sale.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, padding: "0 16px 12px", overflowX: "auto", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            {[["products", "By product"], ["items", "Every return"], ["reasons", "Why"]].map(([k, lbl]) => {
+              const on = returnsTab === k;
+              return (
+                <button key={k} onClick={() => setReturnsTab(k)} style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, border: "1px solid " + (on ? "transparent" : "rgba(255,255,255,0.12)"), background: on ? WA : "rgba(255,255,255,0.05)", color: on ? "#0C0F14" : "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" }}>{lbl}</button>
+              );
+            })}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
+            {D.returns.lines === 0 && (
+              <div style={{ textAlign: "center", color: "rgba(255,255,255,0.4)", fontSize: 14, padding: "40px 0" }}>
+                {D.errors.returns ? "Returns aren't synced yet." : "No returns in this period."}
+              </div>
+            )}
+
+            {returnsTab === "reasons" && (
+              <>
+                <Section title="Why they came back">
+                  {D.returns.byReason.map((r) => (
+                    <InfoRow key={r.reason} label={r.reason} value={`${r.units} units`} color={isQualityReturn(r.reason) ? "#F87171" : undefined} top />
+                  ))}
+                </Section>
+                <Section title="What happened to the stock">
+                  {D.returns.byOutcome.map((o) => (
+                    <InfoRow key={o.outcome} label={o.outcome} value={`${o.units} units`} color={o.outcome.toLowerCase().includes("removal") ? "#F2C14E" : "#25D366"} top />
+                  ))}
+                </Section>
+              </>
+            )}
+
+            {returnsTab === "products" && D.returns.products.map((p) => (
+              <div key={p.sku} style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 12 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 600, color: "#fff", lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{p.title}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>SKU: {p.sku}</div>
+                <div style={{ height: 1, background: PANEL_HAIR, margin: "12px 0" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>Faulty</div>
+                      <div style={{ fontSize: 17, fontWeight: 800, color: p.defectUnits ? "#F87171" : "rgba(255,255,255,0.5)", ...NUM }}>{p.defectUnits}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>All returns</div>
+                      <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", ...NUM }}>{p.units}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>Sold</div>
+                      <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", ...NUM }}>{p.sold}</div>
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: p.defectRate === null ? "rgba(255,255,255,0.5)" : p.defectRate >= RETURN_SLA ? "#F87171" : "#F2C14E", background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "5px 10px", ...NUM }}>
+                    {p.defectRate === null ? "N/A" : p.defectRate + "%"}
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {returnsTab === "items" && D.returns.items.slice(0, returnLimit).map((r) => (
+              <button key={r.sellerReturnId} onClick={() => setReturnDetail(r)} style={{ width: "100%", textAlign: "left", background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 12, cursor: "pointer", fontFamily: FONT }}>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <ProductImage src={r.imageUrl} size={54} iconSize={22} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{r.title}</div>
+                      <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", textAlign: "right", flexShrink: 0, ...NUM }}>{r.date}</div>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 3 }}>{r.rrn} · {r.warehouse}</div>
+                  </div>
+                </div>
+                <div style={{ height: 1, background: PANEL_HAIR, margin: "12px 0" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: r.quality ? "#F87171" : "rgba(255,255,255,0.65)", background: r.quality ? "#F8717122" : "rgba(255,255,255,0.06)", border: "1px solid " + (r.quality ? "#F8717133" : "rgba(255,255,255,0.1)"), borderRadius: 8, padding: "5px 9px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.reason}</span>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
+                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", ...NUM }}>Qty {r.qty}</span>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: "#fff", ...NUM }}>{rand(r.saleReversed)}</span>
+                    <ChevronRight size={16} color="rgba(255,255,255,0.35)" strokeWidth={2.2} />
+                  </div>
+                </div>
+              </button>
+            ))}
+
+            {returnsTab === "items" && D.returns.items.length > returnLimit && (
+              <button onClick={() => setReturnLimit((n) => n + RETURNS_PAGE)} style={{ width: "100%", padding: "13px 0", borderRadius: 13, background: "rgba(255,255,255,0.06)", border: "1px solid " + PANEL_BORDER, color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>
+                Show more ({D.returns.items.length - returnLimit} left)
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Return detail */}
+        {returnDetail && (() => {
+          const r = returnDetail;
+          return (
+            <div style={{ position: "absolute", inset: 0, zIndex: 75, background: "#0C0F14", display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 18px 14px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                <button onClick={() => setReturnDetail(null)} style={{ fontSize: 16, fontWeight: 600, color: WA, background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Back</button>
+                <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Return Details</span>
+                <span style={{ width: 44 }} />
+              </div>
+              <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 40px" }}>
+                <Section pad={false}>
+                  <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 14px" }}>
+                    <ProductImage src={r.imageUrl} size={190} iconSize={56} />
+                  </div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.3 }}>{r.title}</div>
+                  <div style={{ marginTop: 12 }}>
+                    <InfoRow label="SKU" value={r.sku} top />
+                    <InfoRow label="TSIN" value={r.tsin} top />
+                    <InfoRow label="Quantity" value={r.qty} top />
+                    <InfoRow label="RRN" value={r.rrn} top />
+                    <InfoRow label="Status" value={r.outcome} color={r.removal ? "#F2C14E" : "#25D366"} top />
+                  </div>
+                </Section>
+
+                {r.hasDetails ? (
+                  <>
+                    <Section title="Return Performance">
+                      {/* Takealot's own six-month counters, not a
+                          re-derivation — this is the number their SLA
+                          is judged on. */}
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 6 }}>
+                        <span style={{ fontSize: 34, fontWeight: 800, color: r.defectRate6m === null ? "rgba(255,255,255,0.5)" : r.defectRate6m >= RETURN_SLA ? "#F87171" : "#25D366", ...NUM }}>
+                          {r.defectRate6m === null ? "N/A" : r.defectRate6m + "%"}
+                        </span>
+                        <span style={{ fontSize: 13, color: "rgba(255,255,255,0.45)" }}>defect rate, 6 months</span>
+                      </div>
+                      <SlaBar value={r.defectRate6m || 0} />
+                    </Section>
+
+                    <Section title="Return Overview">
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 6 }}>
+                        {[
+                          { label: "Total Deliveries", value: r.deliveries6m, sub: "Last 6 months" },
+                          { label: "Units Sold", value: r.salesUnits6m, sub: "Last 6 months" },
+                          { label: "Damaged/Defective", value: r.damaged6m, sub: "Returns", warn: r.damaged6m > 0 },
+                          { label: "Wrong Item", value: r.wrongItem6m, sub: "Returns", warn: r.wrongItem6m > 0 },
+                          { label: "Reversal Required", value: r.reversalRequired ? "Yes" : "No", sub: r.reversalRequired ? "Action needed" : "None", warn: r.reversalRequired },
+                          { label: "Warehouse", value: r.warehouse, sub: "Return centre" },
+                        ].map((c) => (
+                          <div key={c.label} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, padding: "12px 13px" }}>
+                            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)" }}>{c.label}</div>
+                            <div style={{ fontSize: 20, fontWeight: 800, color: c.warn ? "#F2C14E" : "#fff", marginTop: 3, ...NUM }}>{c.value}</div>
+                            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 2 }}>{c.sub}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </Section>
+
+                    <Section title="Money">
+                      <InfoRow label="Sale reversed" value={"-" + rand(r.saleReversed)} color="#F87171" top />
+                      <InfoRow label="Fees credited back" value={"+" + rand(r.feesCredited)} color="#25D366" top />
+                      {/* rand() renders a negative as "R -210"; the two rows above put the
+                          sign in front, so match them rather than mixing both forms. */}
+                      <InfoRow label="Net effect" value={(r.netValue < 0 ? "-" : "") + rand(Math.abs(r.netValue))} color={r.netValue < 0 ? "#F87171" : "#25D366"} bold top />
+                      {r.cost > 0 && (
+                        <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 10, lineHeight: 1.5 }}>
+                          {r.removal
+                            ? `Removal order — the ${rand(r.cost)} of stock must be collected.`
+                            : `Back as sellable stock, so the ${rand(r.cost)} of stock is not lost.`}
+                        </div>
+                      )}
+                    </Section>
+
+                    {r.comment && (
+                      <Section title="Customer Comment">
+                        <div style={{ display: "flex", gap: 10, marginTop: 6, background: "rgba(255,255,255,0.04)", borderRadius: 12, padding: "12px 13px" }}>
+                          <MessageSquare size={16} color="rgba(255,255,255,0.4)" strokeWidth={2} style={{ flexShrink: 0, marginTop: 2 }} />
+                          <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", lineHeight: 1.5, fontStyle: "italic" }}>"{r.comment}"</span>
+                        </div>
+                      </Section>
+                    )}
+                  </>
+                ) : (
+                  <Section title="Return Performance">
+                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.45)", marginTop: 6, lineHeight: 1.5 }}>
+                      The detail for this return hasn't been fetched yet — it arrives on the nightly sync.
+                    </div>
+                  </Section>
+                )}
+
+                <Section title="Return Information">
+                  <InfoRow label="Order ID" value={r.orderId} top />
+                  <InfoRow label="Seller Return ID" value={r.sellerReturnId} top />
+                  <InfoRow label="Return Reason" value={r.reason} color={r.quality ? "#F87171" : undefined} top />
+                  <InfoRow label="Returned" value={`${r.date} ${r.time}`} top />
+                  {r.productUrl && (
+                    <a href={r.productUrl} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 12, color: "#4C8DFF", fontSize: 14, fontWeight: 600, textDecoration: "none" }}>
+                      View on Takealot <ArrowUpRight size={15} strokeWidth={2.4} />
+                    </a>
+                  )}
+                </Section>
+              </div>
+            </div>
+          );
+        })()}
         {/* Offers list page */}
         <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: offersOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 18px 12px" }}>
@@ -1226,8 +1502,8 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* filter chips */}
           <div style={{ display: "flex", gap: 8, padding: "0 16px 12px", overflowX: "auto", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-            {[["all", "All"], ["buyable", "Buyable"], ["notbuyable", "Not Buyable"], ["disabled", "Disabled"]].map(([k, lbl]) => {
-              const n = k === "all" ? liveOffers.length : liveOffers.filter((o) => o.status === k).length;
+            {[["active", "Active"], ["buyable", "Buyable"], ["notbuyable", "Not Buyable"], ["disabled", "Disabled"]].map(([k, lbl]) => {
+              const n = liveOffers.filter((o) => matchesOfferFilter(o, k)).length;
               const on = offerFilter === k;
               return (
                 <button key={k} onClick={() => setOfferFilter(k)} style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, border: "1px solid " + (on ? "transparent" : "rgba(255,255,255,0.12)"), background: on ? WA : "rgba(255,255,255,0.05)", color: on ? "#0C0F14" : "rgba(255,255,255,0.7)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT, whiteSpace: "nowrap" }}>{lbl} ({n})</button>
@@ -1236,7 +1512,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
           </div>
           {/* list */}
           <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "14px 16px 40px" }}>
-            {liveOffers.filter((o) => offerFilter === "all" ? true : o.status === offerFilter).filter((o) => { const q = offerSearch.trim().toLowerCase(); return !q || o.title.toLowerCase().includes(q) || o.sku.toLowerCase().includes(q) || o.barcode.toLowerCase().includes(q); }).map((o) => {
+            {liveOffers.filter((o) => matchesOfferFilter(o, offerFilter)).filter((o) => { const q = offerSearch.trim().toLowerCase(); return !q || o.title.toLowerCase().includes(q) || o.sku.toLowerCase().includes(q) || o.barcode.toLowerCase().includes(q); }).map((o) => {
               const s = offerStats(o);
               const st = OFFER_STATUS[o.status];
               return (
@@ -1931,6 +2207,34 @@ function ProductImage({ src, size, iconSize }) {
       onError={() => setFailed(true)}
       style={{ ...tile, objectFit: "contain", background: "#fff" }}
     />
+  );
+}
+
+/**
+ * Takealot's return SLA threshold, as shown in the seller portal.
+ * Measured on defects — damaged/defective plus wrong item — against units
+ * sold, NOT on total returns. Most returns here are cancellations, which
+ * do not count toward it.
+ */
+const RETURN_SLA = 7.5;
+
+/** The 0 - 10% band the portal draws, with the SLA marked. */
+function SlaBar({ value }) {
+  // `num` lives in aggregate.js and is not imported here — using it blanked
+  // the whole app, since a throw in a shared component takes the tree with it.
+  const v = Number.isFinite(Number(value)) ? Number(value) : 0;
+  const pct = Math.max(0, Math.min(100, (v / 10) * 100));
+  const over = v >= RETURN_SLA;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ position: "relative", height: 8, borderRadius: 4, background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
+        <div style={{ width: pct + "%", height: "100%", borderRadius: 4, background: over ? "#F87171" : `linear-gradient(90deg, ${WA}, #34E07A)`, transition: "width 0.4s ease" }} />
+        <div style={{ position: "absolute", left: (RETURN_SLA / 10) * 100 + "%", top: -2, width: 2, height: 12, background: "rgba(255,255,255,0.55)" }} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 6, ...NUM }}>
+        <span>0%</span><span>SLA {RETURN_SLA}%</span><span>10%</span>
+      </div>
+    </div>
   );
 }
 

@@ -15,6 +15,7 @@ import {
   buildRecommendations,
   buildOffers,
   buildOrders,
+  buildReturns,
   buildRows,
   buildSeries,
   prepareSales,
@@ -109,12 +110,22 @@ async function fetchAllSales(since) {
 export async function loadStoreData(now = Date.now()) {
   const since = historyStart(now).toISOString();
 
-  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, recsRes] = await Promise.all([
+  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, returnsRes, recsRes] = await Promise.all([
     fetchAllSales(since),
     supabase.from("offers_cache").select("*").order("sku"),
     supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat, min_price, max_price"),
     supabase.from("targets").select("period, sales_value"),
     fetchCoverageStart(),
+    // Returns carry everything /sales does not: reason, outcome, RRN, the
+    // customer's comment and the money. Windowed to match the sales load,
+    // or a rate would compare a year of returns against a month of sales.
+    // The archive is ~1,100 rows, over PostgREST's 1000-row cap, so the
+    // date filter is load-bearing rather than cosmetic.
+    supabase
+      .from("returns_cache")
+      .select("*")
+      .gte("return_date", since)
+      .order("return_date", { ascending: false }),
     // Sales Ops. Only what the generator still considers true, worst
     // first. Undecided items lead; actioned ones stay visible below.
     supabase
@@ -136,6 +147,9 @@ export async function loadStoreData(now = Date.now()) {
   // Sales Ops is newest of all — a missing table just means migration 008
   // hasn't run. Non-fatal, same as targets.
   if (recsRes.error) errors.recommendations = recsRes.error.message;
+  // returns_cache is newest of all — a missing table just means migration
+  // 011 has not run. Non-fatal, same as targets and Sales Ops.
+  if (returnsRes.error) errors.returns = returnsRes.error.message;
 
   const rawSales = prepareSales(salesRes.data || []);
 
@@ -169,6 +183,7 @@ export async function loadStoreData(now = Date.now()) {
     rows: buildRows(rawSales, now, coverageStart, costsBySku),
     series: buildSeries(rawSales, now),
     orders: buildOrders(rawSales, costsBySku),
+    returns: buildReturns(returnsRes.data || [], rawSales, costsBySku),
     offers,
     // Kept so the report builders can re-bucket by real dates rather than
     // the display-formatted ones on `orders`.

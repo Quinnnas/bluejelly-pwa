@@ -12,6 +12,8 @@
 import assert from "node:assert/strict";
 import {
   buildOffers,
+  buildReturns,
+  isQualityReturn,
   buildOrders,
   buildReportDefs,
   buildRows,
@@ -670,6 +672,116 @@ test("weekly totals match the sales that went in", () => {
   );
   const total = defs["Weekly Report"].rows.reduce((a, r) => a + r[3], 0);
   assert.equal(total, 500, "200 + 300; the cancelled 100 never sold");
+});
+
+const RET = (over = {}) => ({
+  seller_return_id: 1, order_id: 900, rrn: "RRN-AAA", sku: "SKU1",
+  tsin: 111, title: "Thing", qty: 1, warehouse_id: 3,
+  return_date: "2026-08-15T08:00:00+02:00",
+  reason: "Customer Cancellation", outcome: "Sellable stock",
+  outcome_status: "sellable_stock",
+  cover_image_url: "http://takealot.s3.amazonaws.com/covers_images/a/s.file",
+  sale_reversed: 200, fees_credited: 50, net_value: -150,
+  details_synced_at: "2026-09-09T00:00:00+02:00",
+  ...over,
+});
+const SHIPPED = (over = {}) =>
+  sale("2026-08-15T10:00:00Z", { status: "Shipped to Customer", ...over });
+
+test("a cancellation is not a defect", () => {
+  // The whole reason returns_cache exists. Counting cancellations as
+  // returns made Elf Bar 9000 look like a quality problem when 135 of its
+  // 145 returns were customers changing their minds.
+  const rows = [
+    RET({ seller_return_id: 1, qty: 3, reason: "Customer Cancellation" }),
+    RET({ seller_return_id: 2, qty: 1, reason: "Defective or damaged" }),
+    RET({ seller_return_id: 3, qty: 1, reason: "Failed delivery" }),
+  ];
+  const sales = prepareSales([SHIPPED({ sku: "SKU1", quantity: 95, unit_price: 10, line_total: 950 })]);
+  const r = buildReturns(rows, sales);
+  assert.equal(r.units, 5, "every returned unit");
+  assert.equal(r.cancelUnits, 3);
+  assert.equal(r.defectUnits, 1, "only the faulty one");
+  assert.equal(r.otherUnits, 1, "failed delivery is neither");
+  assert.equal(r.defectRate, 1.1, "1 faulty of 95 out — the SLA number");
+  assert.ok(r.defectRate < r.rate, "the defect rate is the smaller, honest one");
+});
+test("returns rank by defects first, not by volume", () => {
+  const rows = [
+    RET({ seller_return_id: 1, sku: "POPULAR", qty: 20, reason: "Customer Cancellation" }),
+    RET({ seller_return_id: 2, sku: "BROKEN", qty: 2, reason: "Defective or damaged" }),
+  ];
+  const sales = prepareSales([
+    SHIPPED({ id: "a", sku: "POPULAR", quantity: 200, unit_price: 10, line_total: 2000 }),
+    SHIPPED({ id: "b", sku: "BROKEN", quantity: 20, unit_price: 10, line_total: 200 }),
+  ]);
+  const r = buildReturns(rows, sales);
+  assert.equal(r.products[0].sku, "BROKEN", "2 faults outrank 20 cancellations");
+  assert.equal(r.products[0].defectRate, 10);
+  assert.equal(r.products[1].defectUnits, 0);
+  assert.equal(r.products[1].defectRate, 0, "cancellations do not raise a defect rate");
+});
+test("the money is the margin, not the sale", () => {
+  const r = buildReturns([RET({ sale_reversed: 299, fees_credited: 76, net_value: -223 })], []);
+  const [i] = r.items;
+  assert.equal(i.saleReversed, 299);
+  assert.equal(i.feesCredited, 76);
+  assert.equal(i.netValue, -223, "both fees really do come back");
+  assert.equal(r.value, 299);
+  assert.equal(r.netValue, -223);
+});
+test("a removal order is flagged; sellable stock is not", () => {
+  const r = buildReturns([
+    RET({ seller_return_id: 1, outcome: "Sellable stock", outcome_status: "sellable_stock" }),
+    RET({ seller_return_id: 2, outcome: "Removal Order", outcome_status: "removal_order" }),
+    RET({ seller_return_id: 3, outcome: "Removal Order - Incorrect Product", outcome_status: "pending_removal_order" }),
+  ], []);
+  assert.equal(r.removals, 2, "only the removal orders are stock you must collect");
+  assert.equal(r.items.find((x) => x.sellerReturnId === 1).removal, false);
+});
+test("warehouse ids become DC names", () => {
+  const names = [3, 1, 6, 99].map((id) => buildReturns([RET({ warehouse_id: id })], []).items[0].warehouse);
+  assert.deepEqual(names, ["JHB", "CPT", "DBN", "DC 99"], "1/3/6 per the API's own list");
+});
+test("cover images are upgraded to https here too", () => {
+  const [i] = buildReturns([RET()], []).items;
+  assert.ok(i.imageUrl.startsWith("https://"), "or the tile is blocked as mixed content");
+  assert.equal(buildReturns([RET({ cover_image_url: null })], []).items[0].imageUrl, null);
+});
+test("a return whose details have not synced degrades instead of lying", () => {
+  const [i] = buildReturns([RET({
+    details_synced_at: null, comment: null, sale_reversed: null,
+    fees_credited: null, net_value: null, sales_units_6m: null,
+  })], []).items;
+  assert.equal(i.hasDetails, false, "so the screen can say so rather than show zeros");
+  assert.equal(i.saleReversed, 0);
+  assert.equal(i.defectRate6m, null, "no six-month base means no rate, not 0%");
+  assert.equal(i.comment, null);
+});
+test("no returns at all produces a valid shape, not a crash", () => {
+  const r = buildReturns([], prepareSales([SHIPPED({ quantity: 5, unit_price: 10, line_total: 50 })]));
+  assert.equal(r.lines, 0);
+  assert.equal(r.defectRate, 0);
+  assert.equal(r.sold, 5);
+  assert.deepEqual(r.products, []);
+  assert.deepEqual(r.byReason, []);
+  assert.ok(Number.isFinite(r.rate));
+});
+test("a period with nothing shipped gives 0%, not Infinity or NaN", () => {
+  const r = buildReturns([RET()], prepareSales([
+    sale("2026-08-15T08:00:00Z", { quantity: 3, unit_price: 10, line_total: 30, status: "Preparing for Customer" }),
+  ]));
+  assert.equal(r.sold, 0, "nothing left the warehouse");
+  assert.equal(r.defectRate, 0);
+  assert.ok(Number.isFinite(r.rate));
+  assert.equal(r.products[0].rate, null, "and the per-product rate says N/A rather than 0%");
+});
+test("isQualityReturn only counts the two product faults", () => {
+  assert.equal(isQualityReturn("Defective or damaged"), true);
+  assert.equal(isQualityReturn("Not what I ordered"), true);
+  for (const r of ["Customer Cancellation", "Failed delivery", "Exception", "Changed my mind", null]) {
+    assert.equal(isQualityReturn(r), false, r + " is not a product fault");
+  }
 });
 
 console.log(

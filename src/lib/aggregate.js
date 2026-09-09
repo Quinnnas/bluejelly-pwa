@@ -438,6 +438,181 @@ export function buildOffers(offers) {
   }));
 }
 
+/**
+ * Reasons that say something about the product rather than the customer.
+ *
+ * This split is the whole point of reading returns_cache instead of the
+ * "Returned" status on a sale. Across the archive, 928 of 1,104 returns
+ * are Customer Cancellation and 983 come back as sellable stock. Counting
+ * those as returns turns a healthy profile into an alarming one and
+ * buries the few SKUs that genuinely misbehave — it made Elf Bar 9000
+ * look like a quality problem when 135 of its 145 returns were
+ * cancellations.
+ */
+export const QUALITY_REASONS = ["Defective or damaged", "Not what I ordered"];
+
+export function isQualityReturn(reason) {
+  return QUALITY_REASONS.includes(reason);
+}
+
+/** 1 = CPT, 3 = JHB, 6 = DBN, per /v2/shipment/filter_options/warehouse. */
+const WAREHOUSES = { 1: "CPT", 3: "JHB", 6: "DBN" };
+
+/**
+ * Returns, from returns_cache rather than from sale statuses.
+ *
+ * `sales` is still needed for one thing: the denominator. A rate has to
+ * be measured against what left the warehouse, and only sales_cache knows
+ * that. Both are windowed the same way by the caller, or the rate compares
+ * a year of returns against a month of sales.
+ */
+export function buildReturns(returnRows = [], sales = [], costsBySku = new Map()) {
+  const dated = sales.filter((s) => s._date);
+
+  // Units that went out: shipped plus returned, since a returned line
+  // shipped before it came back. Excludes Preparing (not gone yet),
+  // cancellations, Inter DC Transfer and Lost In Transit.
+  let sold = 0;
+  const soldBySku = new Map();
+  for (const s of dated) {
+    const status = (s.status || "").toLowerCase();
+    if (!status.includes("ship") && !status.includes("return")) continue;
+    const qty = num(s.quantity) || 1;
+    sold += qty;
+    soldBySku.set(s.sku, (soldBySku.get(s.sku) || 0) + qty);
+  }
+
+  let units = 0;
+  let defectUnits = 0;
+  let cancelUnits = 0;
+  let value = 0;
+  let netValue = 0;
+  const bySku = new Map();
+  const reasons = new Map();
+  const outcomes = new Map();
+
+  for (const r of returnRows) {
+    const qty = num(r.qty) || 1;
+    const quality = isQualityReturn(r.reason);
+    units += qty;
+    if (quality) defectUnits += qty;
+    else if ((r.reason || "").toLowerCase().includes("cancel")) cancelUnits += qty;
+    value += num(r.sale_reversed);
+    netValue += num(r.net_value);
+
+    const reason = r.reason || "Unknown";
+    const re = reasons.get(reason) || { reason, lines: 0, units: 0 };
+    re.lines += 1;
+    re.units += qty;
+    reasons.set(reason, re);
+
+    const outcome = r.outcome || "Unknown";
+    const oe = outcomes.get(outcome) || { outcome, lines: 0, units: 0 };
+    oe.lines += 1;
+    oe.units += qty;
+    outcomes.set(outcome, oe);
+
+    const sku = r.sku || "—";
+    const pe = bySku.get(sku) || {
+      sku, title: r.title || sku, units: 0, defectUnits: 0, value: 0,
+    };
+    pe.units += qty;
+    if (quality) pe.defectUnits += qty;
+    pe.value += num(r.sale_reversed);
+    bySku.set(sku, pe);
+  }
+
+  const rateOf = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
+
+  const products = [...bySku.values()]
+    .map((p) => {
+      const out = soldBySku.get(p.sku) || 0;
+      return {
+        ...p,
+        value: Math.round(p.value),
+        sold: out,
+        // null rather than 0 when the SKU shipped nothing in this window:
+        // a return with no matching sales is a real case (it shipped
+        // before the window opened) and 0% would read as "no problem".
+        rate: out > 0 ? rateOf(p.units, out) : null,
+        defectRate: out > 0 ? rateOf(p.defectUnits, out) : null,
+      };
+    })
+    // Quality first — that is the list worth acting on. Cancellations
+    // rank by volume only because they say nothing about the product.
+    .sort((a, b) => b.defectUnits - a.defectUnits || b.units - a.units);
+
+  const items = returnRows
+    .slice()
+    .sort((a, b) => String(b.return_date || "").localeCompare(String(a.return_date || "")))
+    .map((r) => {
+      const when = r.return_date ? new Date(r.return_date) : null;
+      const sast = when ? new Date(when.getTime() + SAST_OFFSET_MS) : null;
+      const dd = sast ? String(sast.getUTCDate()).padStart(2, "0") : "—";
+      const mon = sast ? sast.toLocaleString("en-ZA", { month: "short", timeZone: "UTC" }) : "";
+      // Takealot's own six-month defect counters, which is what its 7.5%
+      // SLA is measured against — their arithmetic, not a re-derivation.
+      const slaBase = num(r.sales_units_6m);
+      const defects6m = num(r.damaged_defective_6m) + num(r.wrong_item_6m);
+      return {
+        sellerReturnId: r.seller_return_id,
+        rrn: r.rrn || "—",
+        orderId: r.order_id ?? "—",
+        sku: r.sku || "—",
+        tsin: r.tsin ?? "—",
+        title: r.title || r.sku || "Unknown product",
+        qty: num(r.qty) || 1,
+        date: sast ? `${dd} ${mon}` : "—",
+        time: sast
+          ? `${String(sast.getUTCHours()).padStart(2, "0")}:${String(sast.getUTCMinutes()).padStart(2, "0")}`
+          : "",
+        reason: r.reason || "Unknown",
+        quality: isQualityReturn(r.reason),
+        outcome: r.outcome || "Unknown",
+        outcomeStatus: r.outcome_status || null,
+        // A removal order is stock you must collect — the only outcome
+        // that is actually a loss. Sellable stock goes back on sale.
+        removal: String(r.outcome_status || r.outcome || "").toLowerCase().includes("removal"),
+        warehouse: WAREHOUSES[r.warehouse_id] || (r.warehouse_id ? `DC ${r.warehouse_id}` : "—"),
+        imageUrl: secureImageUrl(r.cover_image_url),
+        productUrl: r.product_url || null,
+        comment: r.comment || null,
+        reversalRequired: r.reversal_required === true,
+        saleReversed: Math.round(num(r.sale_reversed)),
+        feesCredited: Math.round(num(r.fees_credited)),
+        netValue: Math.round(num(r.net_value)),
+        deliveries6m: num(r.deliveries_6m),
+        salesUnits6m: slaBase,
+        damaged6m: num(r.damaged_defective_6m),
+        wrongItem6m: num(r.wrong_item_6m),
+        defectRate6m: slaBase > 0 ? rateOf(defects6m, slaBase) : null,
+        hasDetails: !!r.details_synced_at,
+        cost: Math.round(num(costsBySku.get(r.sku)?.cost_incl_vat) * (num(r.qty) || 1)),
+      };
+    });
+
+  return {
+    lines: returnRows.length,
+    units,
+    defectUnits,
+    cancelUnits,
+    // Anything neither a quality fault nor a cancellation: failed
+    // delivery, exception, changed my mind.
+    otherUnits: units - defectUnits - cancelUnits,
+    value: Math.round(value),
+    netValue: Math.round(netValue),
+    sold,
+    rate: rateOf(units, sold),
+    // The headline. Takealot's SLA is on defects, not on cancellations.
+    defectRate: rateOf(defectUnits, sold),
+    removals: items.filter((i) => i.removal).length,
+    byReason: [...reasons.values()].sort((a, b) => b.units - a.units),
+    byOutcome: [...outcomes.values()].sort((a, b) => b.units - a.units),
+    products,
+    items,
+  };
+}
+
 /** Report definitions built from live data, replacing the REPORT_DEFS sample. */
 export function buildReportDefs(data, now = Date.now()) {
   const money = (v) => Math.round(v);
