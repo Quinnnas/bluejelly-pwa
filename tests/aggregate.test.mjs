@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import {
   buildOffers,
+  canonicalSku,
   buildCostHistory,
   costAt,
   buildReturns,
@@ -872,6 +873,67 @@ test("an order opened months later shows what it cost then", () => {
   assert.equal(o.productCost, 324, "2 units at August's cost");
   assert.equal(o.deliveryCost, 40, "shipping still current, and still per line");
   assert.equal(o.title, "T", "fields with no history still come from sku_costs");
+});
+
+test("either spelling of a SKU resolves to one product", () => {
+  assert.equal(canonicalSku("BLVK55K0022"), "BLVK55K002");
+  assert.equal(canonicalSku("BLVK55K002"), "BLVK55K002", "the correct one is already canonical");
+  assert.equal(canonicalSku("NSTY9K001"), "NSTY9K001", "everything else is untouched");
+  assert.equal(canonicalSku(undefined), undefined);
+});
+test("a sale under the listing's misspelt SKU still finds its cost", () => {
+  // The cost sheet only knows BLVK55K002. Before this, the sale's profit
+  // read as pure revenue: R390 sold, no cost found, nothing on screen to
+  // say so.
+  const s = prepareSales([withFees("2026-08-15T08:00:00Z", {
+    sku: "BLVK55K0022", quantity: 1, unit_price: 390, line_total: 390,
+    status: "Shipped to Customer",
+  })]);
+  const costs = new Map([["BLVK55K002", { cost_incl_vat: 225, shipping_cost: 2 }]]);
+  const r = buildRows(s, NOW, null, costs)[0];
+  assert.equal(r.cost, 227, "225 product + 2 shipping, found under the other spelling");
+  assert.equal(r.profit, 390 - 55 - 227);
+});
+test("cost history is found under either spelling too", () => {
+  const hist = buildCostHistory([{ sku: "BLVK55K002", valid_from: "2026-07-01", cost_incl_vat: 225 }]);
+  const got = costAt(hist, { cost_incl_vat: 999 }, "BLVK55K0022", new Date("2026-08-15T10:00:00+02:00"));
+  assert.equal(got.cost_incl_vat, 225);
+});
+test("an order under either spelling prices the same", () => {
+  const s = prepareSales([sale("2026-08-15T08:00:00Z", {
+    sku: "BLVK55K0022", quantity: 2, unit_price: 390, line_total: 780,
+  })]);
+  const costs = new Map([["BLVK55K002", { title: "Peach Mango", cost_incl_vat: 225, shipping_cost: 2 }]]);
+  const o = buildOrders(s, costs)[0];
+  assert.equal(o.unitCost, 225);
+  assert.equal(o.productCost, 450);
+  assert.equal(o.deliveryCost, 4);
+  assert.equal(o.sku, "BLVK55K0022", "the listing's own SKU is still what is displayed");
+});
+test("a rename does not split one product into two", () => {
+  // The case this exists for. Sales before the listing is corrected carry
+  // BLVK55K0022; sales after carry BLVK55K002. Grouped naively that is two
+  // products, each with half the history.
+  const rows = [
+    { seller_return_id: 1, sku: "BLVK55K0022", qty: 1, title: "Peach Mango",
+      reason: "Defective or damaged", outcome: "Removal Order", return_date: "2026-08-20T10:00:00+02:00", sale_reversed: 390 },
+    { seller_return_id: 2, sku: "BLVK55K002", qty: 1, title: "Peach Mango",
+      reason: "Defective or damaged", outcome: "Removal Order", return_date: "2026-09-20T10:00:00+02:00", sale_reversed: 390 },
+  ];
+  // A returned sale keeps a row in sales_cache with status "Returned", so
+  // the fixture carries those too — they are part of what went out.
+  const sales = prepareSales([
+    sale("2026-08-10T08:00:00Z", { id: "a", sku: "BLVK55K0022", quantity: 5, unit_price: 390, line_total: 1950, status: "Shipped to Customer" }),
+    sale("2026-09-10T08:00:00Z", { id: "b", sku: "BLVK55K002", quantity: 5, unit_price: 390, line_total: 1950, status: "Shipped to Customer" }),
+    sale("2026-08-20T08:00:00Z", { id: "c", sku: "BLVK55K0022", quantity: 1, unit_price: 390, line_total: 390, status: "Returned" }),
+    sale("2026-09-20T08:00:00Z", { id: "d", sku: "BLVK55K002", quantity: 1, unit_price: 390, line_total: 390, status: "Returned" }),
+  ]);
+  const r = buildReturns(rows, sales);
+  assert.equal(r.products.length, 1, "one product, not two");
+  assert.equal(r.products[0].sku, "BLVK55K002", "under the canonical name");
+  assert.equal(r.products[0].defectUnits, 2, "both returns counted together");
+  assert.equal(r.products[0].sold, 12, "10 shipped + the 2 that shipped and came back");
+  assert.equal(r.products[0].defectRate, 16.7, "2 of 12, not 1 of 6 twice over");
 });
 
 console.log(

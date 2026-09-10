@@ -42,6 +42,40 @@ export function offerStatusKey(status) {
   return "buyable";
 }
 
+/**
+ * Two spellings of the same product, treated as one.
+ *
+ * Kept deliberately in step with SKU_ALIASES in
+ * bluejelly-sync/takealot/sku_aliases.py — **change both together**. It is
+ * one entry, and pulling it from the database would cost a query on every
+ * load to avoid duplicating a single line.
+ *
+ * Storage stays faithful: offers_cache and sales_cache hold exactly what
+ * Takealot said, so the app still reconciles against the seller portal.
+ * Only grouping and cost lookups canonicalise, so a product listed under a
+ * misspelt SKU cannot split into two rows or lose its own history.
+ */
+const SKU_ALIASES = {
+  // "BLVK Ultra 55k Disposable Vape - Peach Mango Lychee", offer
+  // 250871010. Listed on 1 Sept with an extra 2; the spreadsheet, and the
+  // other nine in the family, say BLVK55K002.
+  BLVK55K0022: "BLVK55K002",
+};
+
+export function canonicalSku(sku) {
+  return SKU_ALIASES[sku] || sku;
+}
+
+/**
+ * A SKU's cost record, found under either spelling.
+ *
+ * The sync already writes a cost row under both, so this is the second
+ * line of defence — it also covers a row that predates the alias.
+ */
+function costRecord(costsBySku, sku) {
+  return costsBySku.get(sku) || costsBySku.get(canonicalSku(sku));
+}
+
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
 
 /**
@@ -175,7 +209,7 @@ function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate, costHi
     // Product cost is read AT THE SALE'S DATE, so a spreadsheet update
     // stops rewriting last month's profit. Shipping has no history — it
     // comes from the live offer — so it stays current.
-    const c = costsBySku.get(s.sku);
+    const c = costRecord(costsBySku, s.sku);
     const at = costAt(costHistory, c, s.sku, s._date);
     const unitCost = (num(at?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
 
@@ -334,7 +368,7 @@ export function buildOrders(sales, costsBySku, costHistory = new Map()) {
     .slice()
     .sort((a, b) => b._date - a._date)
     .map((s) => {
-      const current = costsBySku.get(s.sku);
+      const current = costRecord(costsBySku, s.sku);
       // Priced at the sale's own date, so reopening a July order shows
       // what it actually cost in July.
       const cost = { ...current, ...costAt(costHistory, current, s.sku, s._date) };
@@ -426,7 +460,7 @@ function secureImageUrl(url) {
  * the cases where nothing better exists.
  */
 export function costAt(history, fallback, sku, when) {
-  const points = history.get(sku);
+  const points = history.get(sku) || history.get(canonicalSku(sku));
   if (!points || !points.length) return fallback;
   if (!when) return points[points.length - 1];
 
@@ -544,7 +578,10 @@ export function buildReturns(returnRows = [], sales = [], costsBySku = new Map()
     if (!status.includes("ship") && !status.includes("return")) continue;
     const qty = num(s.quantity) || 1;
     sold += qty;
-    soldBySku.set(s.sku, (soldBySku.get(s.sku) || 0) + qty);
+    // Canonical too, or a return rate divides one spelling's returns by
+    // the other spelling's sales.
+    const key = canonicalSku(s.sku);
+    soldBySku.set(key, (soldBySku.get(key) || 0) + qty);
   }
 
   let units = 0;
@@ -577,7 +614,8 @@ export function buildReturns(returnRows = [], sales = [], costsBySku = new Map()
     oe.units += qty;
     outcomes.set(outcome, oe);
 
-    const sku = r.sku || "—";
+    // Canonical: a return under either spelling belongs to one product.
+    const sku = canonicalSku(r.sku) || "—";
     const pe = bySku.get(sku) || {
       sku, title: r.title || sku, units: 0, defectUnits: 0, value: 0,
     };
@@ -652,7 +690,7 @@ export function buildReturns(returnRows = [], sales = [], costsBySku = new Map()
         wrongItem6m: num(r.wrong_item_6m),
         defectRate6m: slaBase > 0 ? rateOf(defects6m, slaBase) : null,
         hasDetails: !!r.details_synced_at,
-        cost: Math.round(num(costsBySku.get(r.sku)?.cost_incl_vat) * (num(r.qty) || 1)),
+        cost: Math.round(num(costRecord(costsBySku, r.sku)?.cost_incl_vat) * (num(r.qty) || 1)),
       };
     });
 
