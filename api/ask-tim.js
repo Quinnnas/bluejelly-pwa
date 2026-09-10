@@ -268,10 +268,18 @@ export default async function handler(req, res) {
 
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
-    // Said plainly, because this is the one setup step that cannot be done
-    // from inside the app.
+    // "It's missing" is not much help when the variable has been set but
+    // is not arriving. Report which Anthropic-ish NAMES the function can
+    // actually see — names only, never values — which distinguishes a
+    // typo from a variable saved to the wrong Vercel environment.
+    const seen = Object.keys(process.env)
+      .filter((k) => /anthropic|claude/i.test(k))
+      .sort();
     return res.status(503).json({
       error: "Tim isn't configured yet — ANTHROPIC_API_KEY is missing from the server's environment variables.",
+      diagnostic: seen.length
+        ? `The function can see: ${seen.join(", ")} — close, but not the exact name ANTHROPIC_API_KEY.`
+        : "The function sees no Anthropic variable at all. In Vercel, check the variable is ticked for the Production environment, then redeploy.",
     });
   }
 
