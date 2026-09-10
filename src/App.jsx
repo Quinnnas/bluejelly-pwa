@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { loadStoreData, buildReportDefs } from "./lib/data";
 import { isQualityReturn } from "./lib/aggregate";
+import { askTim, timContext, TIM_SUGGESTIONS } from "./lib/askTim";
 import {
   Bell,
   ChevronRight,
@@ -34,6 +35,7 @@ import {
   Crosshair,
   RotateCcw,
   MessageSquare,
+  Sparkles,
   Crown,
   Pencil,
   Truck,
@@ -487,6 +489,34 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const RETURNS_PAGE = 100;
   const [returnLimit, setReturnLimit] = useState(RETURNS_PAGE);
   const [returnDetail, setReturnDetail] = useState(null);
+  const [timOpen, setTimOpen] = useState(false);
+  const [timLog, setTimLog] = useState([]);
+  const [timInput, setTimInput] = useState("");
+  const [timBusy, setTimBusy] = useState(false);
+  const [timError, setTimError] = useState("");
+  const timScrollRef = React.useRef(null);
+
+  const sendToTim = React.useCallback(async (text) => {
+    const question = (text || "").trim();
+    if (!question || timBusy) return;
+    setTimInput("");
+    setTimError("");
+    // The user's message goes up immediately — waiting for the round trip
+    // to show it makes the app feel broken on a slow connection.
+    const next = [...timLog, { role: "user", content: question }];
+    setTimLog(next);
+    setTimBusy(true);
+    const { reply, error } = await askTim(next, timContext(data));
+    if (error) setTimError(error);
+    else setTimLog([...next, { role: "assistant", content: reply }]);
+    setTimBusy(false);
+  }, [timLog, timBusy, data]);
+
+  // Keep the newest message in view as the conversation grows.
+  useEffect(() => {
+    const el = timScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [timLog, timBusy, timError]);
   const [offerDetail, setOfferDetail] = useState(null);
   const [offerFilter, setOfferFilter] = useState("active");
   const [offerSearch, setOfferSearch] = useState("");
@@ -599,6 +629,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { label: "Buy Box Tracking", icon: Crosshair },
     { label: "Reports", icon: BarChart3, children: ["Stock Replenishment", "Weekly Report", "Monthly Report"] },
     { label: "Automations", icon: Zap },
+    { label: "Ask Tim", icon: Sparkles },
     { label: "Settings", icon: Settings },
   ];
 
@@ -1002,7 +1033,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 );
               }
               return (
-                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (m.label === "Returns") setReturnsOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
+                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (m.label === "Returns") setReturnsOpen(true); else if (m.label === "Ask Tim") setTimOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
                   <Icon size={20} strokeWidth={2} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
                   {m.label}
                   {m.label === "Sales Ops" && salesOpsPending > 0 && (
@@ -1244,6 +1275,97 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
         </div>
 
 
+
+        {/* Ask Tim */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 72, background: "#0C0F14", transform: timOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 16px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            <button onClick={() => setTimOpen(false)} style={{ width: 38, height: 38, borderRadius: 19, background: "rgba(255,255,255,0.07)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <ChevronLeft size={20} color="#fff" strokeWidth={2.4} />
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Ask Tim</div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 1 }}>Your Takealot expert</div>
+            </div>
+            {timLog.length > 0 && (
+              <button onClick={() => { setTimLog([]); setTimError(""); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Clear</button>
+            )}
+          </div>
+
+          <div ref={timScrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 8px" }}>
+            {timLog.length === 0 && (
+              <div style={{ paddingTop: 8 }}>
+                <div style={{ width: 56, height: 56, borderRadius: 28, background: "linear-gradient(135deg, rgba(37,211,102,0.22), rgba(76,141,255,0.16))", border: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+                  <Sparkles size={26} color={WA} strokeWidth={2} />
+                </div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Ask me about the app or Takealot</div>
+                <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.45)", marginTop: 6, lineHeight: 1.55 }}>
+                  I know how every figure on these screens is worked out, and how selling on Takealot works. I can see your live numbers, so ask about them directly.
+                </div>
+                <div style={{ marginTop: 18 }}>
+                  {TIM_SUGGESTIONS.map((q) => (
+                    <button key={q} onClick={() => sendToTim(q)} style={{ display: "block", width: "100%", textAlign: "left", background: "rgba(255,255,255,0.05)", border: "1px solid " + PANEL_BORDER, borderRadius: 12, padding: "12px 14px", marginBottom: 9, color: "rgba(255,255,255,0.82)", fontSize: 13.5, cursor: "pointer", fontFamily: FONT, lineHeight: 1.4 }}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {timLog.map((m, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
+                <div style={{
+                  maxWidth: "86%",
+                  background: m.role === "user" ? WA : `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`,
+                  border: m.role === "user" ? "none" : "1px solid " + PANEL_BORDER,
+                  color: m.role === "user" ? "#0C0F14" : "rgba(255,255,255,0.9)",
+                  borderRadius: 16, padding: "11px 14px", fontSize: 14, lineHeight: 1.55,
+                  fontWeight: m.role === "user" ? 600 : 400,
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>{m.content}</div>
+              </div>
+            ))}
+
+            {timBusy && (
+              <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
+                <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: "12px 16px", color: "rgba(255,255,255,0.45)", fontSize: 13.5 }}>
+                  Tim is thinking…
+                </div>
+              </div>
+            )}
+
+            {timError && (
+              <div style={{ background: "#F8717118", border: "1px solid #F8717133", borderRadius: 12, padding: "11px 13px", color: "#F87171", fontSize: 13, lineHeight: 1.5, marginBottom: 12 }}>
+                {timError}
+              </div>
+            )}
+          </div>
+
+          <div style={{ padding: "10px 16px calc(16px + env(safe-area-inset-bottom))", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 9, alignItems: "flex-end" }}>
+            <textarea
+              value={timInput}
+              onChange={(e) => setTimInput(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends; Shift+Enter makes a new line. On a phone the
+                // on-screen keyboard's return key inserts a newline instead,
+                // which is what people expect there.
+                if (e.key === "Enter" && !e.shiftKey && !/Mobi|Android/i.test(navigator.userAgent)) {
+                  e.preventDefault();
+                  sendToTim(timInput);
+                }
+              }}
+              rows={1}
+              placeholder="Ask about the app or Takealot…"
+              style={{ flex: 1, resize: "none", maxHeight: 120, background: "rgba(255,255,255,0.06)", border: "1px solid " + PANEL_BORDER, borderRadius: 14, padding: "11px 13px", color: "#fff", fontSize: 14.5, fontFamily: FONT, outline: "none", lineHeight: 1.45 }}
+            />
+            <button
+              onClick={() => sendToTim(timInput)}
+              disabled={timBusy || !timInput.trim()}
+              style={{ width: 42, height: 42, borderRadius: 21, flexShrink: 0, border: "none", background: timBusy || !timInput.trim() ? "rgba(255,255,255,0.09)" : WA, display: "flex", alignItems: "center", justifyContent: "center", cursor: timBusy || !timInput.trim() ? "default" : "pointer" }}
+            >
+              <ArrowUpRight size={20} color={timBusy || !timInput.trim() ? "rgba(255,255,255,0.3)" : "#0C0F14"} strokeWidth={2.6} />
+            </button>
+          </div>
+        </div>
         {/* Returns page */}
         <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: returnsOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 16px 12px" }}>
