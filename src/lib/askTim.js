@@ -79,6 +79,19 @@ export function timContext(data) {
   };
 }
 
+/** What a stored message shows in the transcript. */
+export function messageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+}
+
+/** How many attachments a stored message carried. */
+export function messageAttachments(content) {
+  if (!Array.isArray(content)) return [];
+  return content.filter((c) => c.type === "image" || c.type === "document");
+}
+
 /** Openers, so the first screen isn't an empty box. */
 export const TIM_SUGGESTIONS = [
   "Why is Gross Profit lower than Sales Value?",

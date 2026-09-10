@@ -24,6 +24,18 @@ const MAX_TOKENS = 1024;
 const MAX_HISTORY = 12;      // messages, oldest dropped first
 const MAX_CHARS = 4000;      // per message
 
+// Attachments. Whitelisted rather than "whatever the client sent": this
+// body is forwarded to a paid API, and an unbounded passthrough is an
+// invitation to send something enormous or unexpected.
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const DOC_TYPES = ["application/pdf"];
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACHMENT_BYTES = 3_750_000;   // ~5MB of base64
+// Images are re-read on every turn, so an old screenshot keeps costing
+// long after the conversation moved on. Keep them on the newest few
+// messages and leave a note behind on the rest.
+const KEEP_IMAGES_ON_LAST = 3;
+
 const SYSTEM = `You are Tim, the Takealot expert built into the BlueJelly app.
 
 BlueJelly is a seller dashboard for Blaas Baas / House of Hubbly, a South
@@ -99,6 +111,21 @@ These are decisions, not accidents. Explain them as such.
   requests from cloud IP addresses.
 - So figures can be up to 15 minutes behind. "Sync now" forces a refresh.
 
+## Attachments
+
+The user can send screenshots, photos and PDFs. Expect app screenshots,
+seller-portal screenshots, Takealot invoices and remittances, product
+photos, and packaging or stock photos.
+
+Read them and answer the question asked. Where a screenshot shows figures
+that ought to match this app, say plainly whether they do and why they
+might not — the dashboard excludes cancellations and returns, so it reads
+lower than the seller portal by design.
+
+If an attachment has nothing to do with Takealot or this app, say so in a
+sentence and ask what they wanted to know. Do not describe it at length.
+Never guess at a number that is illegible; ask for a clearer shot.
+
 ## Style
 
 Be direct and concrete. Use the user's actual numbers when they are in the
@@ -108,6 +135,63 @@ so rather than guessing — a confident wrong answer about money is worse
 than "I'm not sure".
 You are talking to the person who owns the store, so assume commercial
 literacy but not technical knowledge of the app's internals.`;
+
+/**
+ * Accepts either a plain string or Anthropic's content blocks, keeping
+ * only blocks we recognise. Anything else is dropped rather than
+ * forwarded — the client is trusted to be our own app, but this endpoint
+ * is reachable by anyone with a session.
+ */
+function sanitiseContent(content) {
+  if (typeof content === "string") return content.slice(0, MAX_CHARS);
+  if (!Array.isArray(content)) return null;
+
+  const blocks = [];
+  let attachments = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+
+    if (block.type === "text" && typeof block.text === "string") {
+      blocks.push({ type: "text", text: block.text.slice(0, MAX_CHARS) });
+      continue;
+    }
+
+    const isImage = block.type === "image";
+    const isDoc = block.type === "document";
+    if (!isImage && !isDoc) continue;
+    if (attachments >= MAX_ATTACHMENTS) continue;
+
+    const src = block.source || {};
+    const allowed = isImage ? IMAGE_TYPES : DOC_TYPES;
+    if (src.type !== "base64" || !allowed.includes(src.media_type)) continue;
+    if (typeof src.data !== "string" || src.data.length > MAX_ATTACHMENT_BYTES) continue;
+
+    attachments += 1;
+    blocks.push({
+      type: block.type,
+      source: { type: "base64", media_type: src.media_type, data: src.data },
+    });
+  }
+  return blocks.length ? blocks : null;
+}
+
+/** Replace attachments on older turns with a note, to stop paying for them. */
+function stripOldAttachments(messages) {
+  const cutoff = messages.length - KEEP_IMAGES_ON_LAST;
+  return messages.map((m, i) => {
+    if (i >= cutoff || typeof m.content === "string") return m;
+    const kept = m.content.filter((c) => c.type === "text");
+    const dropped = m.content.length - kept.length;
+    if (!dropped) return { ...m, content: kept.length ? kept : "" };
+    return {
+      ...m,
+      content: [
+        ...kept,
+        { type: "text", text: `[${dropped} earlier attachment${dropped > 1 ? "s" : ""} not re-sent]` },
+      ],
+    };
+  });
+}
 
 function readBody(req) {
   if (req.body && typeof req.body === "object") return Promise.resolve(req.body);
@@ -172,6 +256,10 @@ function describeContext(ctx) {
   return `\n\nHere is the user's live data, for reference. Use it when relevant; do not recite it back wholesale.\n${lines.join("\n")}`;
 }
 
+// Exported for tests only. These two decide what reaches a paid API, so
+// they are worth pinning directly rather than through the whole handler.
+export const __test = { sanitiseContent, stripOldAttachments };
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -200,10 +288,13 @@ export default async function handler(req, res) {
   }
 
   const incoming = Array.isArray(body.messages) ? body.messages : [];
-  const messages = incoming
-    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-    .slice(-MAX_HISTORY)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CHARS) }));
+  const messages = stripOldAttachments(
+    incoming
+      .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+      .map((m) => ({ role: m.role, content: sanitiseContent(m.content) }))
+      .filter((m) => m.content !== null && m.content !== "")
+      .slice(-MAX_HISTORY)
+  );
 
   if (!messages.length || messages[messages.length - 1].role !== "user") {
     return res.status(400).json({ error: "Nothing to answer." });

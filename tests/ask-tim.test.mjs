@@ -110,6 +110,79 @@ test("the key is never sent to the browser", () => {
   }
 });
 
+
+console.log("\nattachment handling");
+
+// The handler forwards this body to a paid API, so what it accepts matters.
+// These drive the exported helpers through the handler's own module.
+const { sanitiseContent, stripOldAttachments } = await import("../api/ask-tim.js")
+  .then((m) => m.__test || {});
+
+const img = (type = "image/jpeg", data = "AAAA") => ({
+  type: "image", source: { type: "base64", media_type: type, data },
+});
+
+test("a plain string is still accepted", () => {
+  assert.equal(sanitiseContent("hello"), "hello");
+});
+
+test("an image block survives intact", () => {
+  const out = sanitiseContent([img(), { type: "text", text: "what is this?" }]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].type, "image");
+  assert.equal(out[0].source.media_type, "image/jpeg");
+  assert.equal(out[1].text, "what is this?");
+});
+
+test("a PDF is accepted; other document types are not", () => {
+  const pdf = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "AA" } };
+  assert.equal(sanitiseContent([pdf]).length, 1);
+  const docx = { type: "document", source: { type: "base64", media_type: "application/msword", data: "AA" } };
+  assert.equal(sanitiseContent([docx]), null, "an unsupported type leaves nothing to send");
+});
+
+test("an unexpected media type is dropped, not forwarded", () => {
+  assert.equal(sanitiseContent([img("image/svg+xml")]), null);
+  assert.equal(sanitiseContent([img("text/html")]), null);
+});
+
+test("a URL source is refused — only base64 we produced ourselves", () => {
+  const remote = { type: "image", source: { type: "url", url: "https://example.com/x.png" } };
+  assert.equal(sanitiseContent([remote]), null, "or the endpoint fetches arbitrary URLs on request");
+});
+
+test("unknown block types are stripped", () => {
+  const out = sanitiseContent([{ type: "tool_use", name: "rm" }, { type: "text", text: "hi" }]);
+  assert.deepEqual(out, [{ type: "text", text: "hi" }]);
+});
+
+test("more than four attachments are capped", () => {
+  const out = sanitiseContent([img(), img(), img(), img(), img(), img()]);
+  assert.equal(out.filter((b) => b.type === "image").length, 4);
+});
+
+test("an oversized attachment is dropped rather than sent", () => {
+  const huge = img("image/png", "A".repeat(4_000_000));
+  assert.equal(sanitiseContent([huge]), null);
+});
+
+test("older attachments are not re-sent, but a note remains", () => {
+  // Every image in the thread is re-read on every turn, so an old
+  // screenshot keeps costing long after the conversation moved on.
+  const msgs = [
+    { role: "user", content: [img(), { type: "text", text: "old question" }] },
+    { role: "assistant", content: "an answer" },
+    { role: "user", content: "second" },
+    { role: "assistant", content: "another" },
+    { role: "user", content: [img(), { type: "text", text: "newest" }] },
+  ];
+  const out = stripOldAttachments(msgs);
+  assert.equal(out[0].content.filter((c) => c.type === "image").length, 0, "the old image is gone");
+  assert.match(out[0].content.at(-1).text, /not re-sent/, "and it says so");
+  assert.equal(out[0].content[0].text, "old question", "the question itself is kept");
+  assert.equal(out[4].content.filter((c) => c.type === "image").length, 1, "the newest image stays");
+});
+
 console.log(
   `\n${failures.length ? `${failures.length} FAILURE(S): ${failures.join(", ")}` : `ALL ${passed} PASS`}\n`
 );

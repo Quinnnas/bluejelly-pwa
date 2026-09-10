@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { loadStoreData, buildReportDefs } from "./lib/data";
 import { isQualityReturn } from "./lib/aggregate";
-import { askTim, timContext, TIM_SUGGESTIONS } from "./lib/askTim";
+import { askTim, timContext, TIM_SUGGESTIONS, messageText, messageAttachments } from "./lib/askTim";
+import { ACCEPT, MAX_FILES, MAX_TOTAL_BYTES, attachmentBytes, buildContent, prepareAttachment } from "./lib/timAttachments";
 import {
   Bell,
   ChevronRight,
@@ -36,6 +37,8 @@ import {
   RotateCcw,
   MessageSquare,
   Sparkles,
+  Paperclip,
+  FileText as FileIcon,
   Crown,
   Pencil,
   Truck,
@@ -494,23 +497,63 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [timInput, setTimInput] = useState("");
   const [timBusy, setTimBusy] = useState(false);
   const [timError, setTimError] = useState("");
+  const [timFiles, setTimFiles] = useState([]);
   const timScrollRef = React.useRef(null);
+  const timFileRef = React.useRef(null);
 
   const sendToTim = React.useCallback(async (text) => {
     const question = (text || "").trim();
-    if (!question || timBusy) return;
+    // A picture on its own is a fair question — "what is this?" — so an
+    // empty box with an attachment still sends.
+    if ((!question && !timFiles.length) || timBusy) return;
     setTimInput("");
     setTimError("");
+    const files = timFiles;
+    setTimFiles([]);
     // The user's message goes up immediately — waiting for the round trip
     // to show it makes the app feel broken on a slow connection.
-    const next = [...timLog, { role: "user", content: question }];
+    const next = [...timLog, { role: "user", content: buildContent(question, files) }];
     setTimLog(next);
     setTimBusy(true);
     const { reply, error } = await askTim(next, timContext(data));
     if (error) setTimError(error);
     else setTimLog([...next, { role: "assistant", content: reply }]);
     setTimBusy(false);
-  }, [timLog, timBusy, data]);
+  }, [timLog, timBusy, data, timFiles]);
+
+  const addTimFiles = React.useCallback(async (fileList) => {
+    const picked = Array.from(fileList || []);
+    if (!picked.length) return;
+    setTimError("");
+
+    const room = MAX_FILES - timFiles.length;
+    if (room <= 0) {
+      setTimError(`Tim takes ${MAX_FILES} attachments at a time.`);
+      return;
+    }
+
+    const problems = [];
+    const ready = [];
+    let bytes = timFiles.reduce((t, a) => t + attachmentBytes(a), 0);
+
+    for (const file of picked.slice(0, room)) {
+      const a = await prepareAttachment(file);
+      if (a.error) { problems.push(a.error); continue; }
+      const size = attachmentBytes(a);
+      if (bytes + size > MAX_TOTAL_BYTES) {
+        problems.push(`${a.name}: that would push the upload over the size limit.`);
+        continue;
+      }
+      bytes += size;
+      ready.push(a);
+    }
+
+    if (picked.length > room) {
+      problems.push(`Only the first ${room} file${room === 1 ? "" : "s"} were added.`);
+    }
+    if (ready.length) setTimFiles((cur) => [...cur, ...ready]);
+    if (problems.length) setTimError(problems.join(" "));
+  }, [timFiles]);
 
   // Keep the newest message in view as the conversation grows.
   useEffect(() => {
@@ -1287,7 +1330,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 1 }}>Your Takealot expert</div>
             </div>
             {timLog.length > 0 && (
-              <button onClick={() => { setTimLog([]); setTimError(""); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Clear</button>
+              <button onClick={() => { setTimLog([]); setTimError(""); setTimFiles([]); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Clear</button>
             )}
           </div>
 
@@ -1299,7 +1342,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 </div>
                 <div style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Ask me about the app or Takealot</div>
                 <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.45)", marginTop: 6, lineHeight: 1.55 }}>
-                  I know how every figure on these screens is worked out, and how selling on Takealot works. I can see your live numbers, so ask about them directly.
+                  I know how every figure on these screens is worked out, and how selling on Takealot works. I can see your live numbers, so ask about them directly — or send a screenshot, photo or invoice PDF.
                 </div>
                 <div style={{ marginTop: 18 }}>
                   {TIM_SUGGESTIONS.map((q) => (
@@ -1311,19 +1354,36 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               </div>
             )}
 
-            {timLog.map((m, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
-                <div style={{
-                  maxWidth: "86%",
-                  background: m.role === "user" ? WA : `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`,
-                  border: m.role === "user" ? "none" : "1px solid " + PANEL_BORDER,
-                  color: m.role === "user" ? "#0C0F14" : "rgba(255,255,255,0.9)",
-                  borderRadius: 16, padding: "11px 14px", fontSize: 14, lineHeight: 1.55,
-                  fontWeight: m.role === "user" ? 600 : 400,
-                  whiteSpace: "pre-wrap", wordBreak: "break-word",
-                }}>{m.content}</div>
-              </div>
-            ))}
+            {timLog.map((m, i) => {
+              const text = messageText(m.content);
+              const files = messageAttachments(m.content);
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
+                  <div style={{
+                    maxWidth: "86%",
+                    background: m.role === "user" ? WA : `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`,
+                    border: m.role === "user" ? "none" : "1px solid " + PANEL_BORDER,
+                    color: m.role === "user" ? "#0C0F14" : "rgba(255,255,255,0.9)",
+                    borderRadius: 16, padding: "11px 14px", fontSize: 14, lineHeight: 1.55,
+                    fontWeight: m.role === "user" ? 600 : 400,
+                    whiteSpace: "pre-wrap", wordBreak: "break-word",
+                  }}>
+                    {files.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: text ? 8 : 0 }}>
+                        {files.map((f, k) => f.type === "image" ? (
+                          <img key={k} src={`data:${f.source.media_type};base64,${f.source.data}`} alt="" style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 9, background: "#fff" }} />
+                        ) : (
+                          <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(0,0,0,0.16)", borderRadius: 9, padding: "7px 10px", fontSize: 12, fontWeight: 600 }}>
+                            <FileIcon size={13} strokeWidth={2.2} /> PDF
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {text}
+                  </div>
+                </div>
+              );
+            })}
 
             {timBusy && (
               <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 12 }}>
@@ -1340,7 +1400,49 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             )}
           </div>
 
+          {timFiles.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "10px 16px 0" }}>
+              {timFiles.map((f, i) => (
+                <div key={i} style={{ position: "relative" }}>
+                  {f.preview ? (
+                    <img src={f.preview} alt="" style={{ width: 58, height: 58, objectFit: "cover", borderRadius: 10, border: "1px solid " + PANEL_BORDER, background: "#fff" }} />
+                  ) : (
+                    <div title={f.name} style={{ width: 58, height: 58, borderRadius: 10, border: "1px solid " + PANEL_BORDER, background: "rgba(255,255,255,0.06)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3 }}>
+                      <FileIcon size={17} color="rgba(255,255,255,0.6)" strokeWidth={2} />
+                      <span style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.5)" }}>PDF</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setTimFiles((cur) => cur.filter((_, k) => k !== i))}
+                    aria-label={`Remove ${f.name}`}
+                    style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: 10, border: "none", background: "#0C0F14", boxShadow: "0 0 0 1px rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }}
+                  >
+                    <X size={12} color="rgba(255,255,255,0.75)" strokeWidth={2.6} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div style={{ padding: "10px 16px calc(16px + env(safe-area-inset-bottom))", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 9, alignItems: "flex-end" }}>
+            {/* `capture` is deliberately absent: on a phone this offers the
+                camera AND the photo library, and a screenshot of the seller
+                portal is the likeliest thing to send. */}
+            <input
+              ref={timFileRef}
+              type="file"
+              accept={ACCEPT}
+              multiple
+              onChange={(e) => { addTimFiles(e.target.files); e.target.value = ""; }}
+              style={{ display: "none" }}
+            />
+            <button
+              onClick={() => timFileRef.current && timFileRef.current.click()}
+              aria-label="Attach a screenshot, photo or PDF"
+              style={{ width: 42, height: 42, borderRadius: 21, flexShrink: 0, border: "1px solid " + PANEL_BORDER, background: "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+            >
+              <Paperclip size={18} color="rgba(255,255,255,0.65)" strokeWidth={2.2} />
+            </button>
             <textarea
               value={timInput}
               onChange={(e) => setTimInput(e.target.value)}
@@ -1359,10 +1461,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             />
             <button
               onClick={() => sendToTim(timInput)}
-              disabled={timBusy || !timInput.trim()}
-              style={{ width: 42, height: 42, borderRadius: 21, flexShrink: 0, border: "none", background: timBusy || !timInput.trim() ? "rgba(255,255,255,0.09)" : WA, display: "flex", alignItems: "center", justifyContent: "center", cursor: timBusy || !timInput.trim() ? "default" : "pointer" }}
+              disabled={timBusy || (!timInput.trim() && !timFiles.length)}
+              style={{ width: 42, height: 42, borderRadius: 21, flexShrink: 0, border: "none", background: timBusy || (!timInput.trim() && !timFiles.length) ? "rgba(255,255,255,0.09)" : WA, display: "flex", alignItems: "center", justifyContent: "center", cursor: timBusy || (!timInput.trim() && !timFiles.length) ? "default" : "pointer" }}
             >
-              <ArrowUpRight size={20} color={timBusy || !timInput.trim() ? "rgba(255,255,255,0.3)" : "#0C0F14"} strokeWidth={2.6} />
+              <ArrowUpRight size={20} color={timBusy || (!timInput.trim() && !timFiles.length) ? "rgba(255,255,255,0.3)" : "#0C0F14"} strokeWidth={2.6} />
             </button>
           </div>
         </div>
