@@ -272,14 +272,22 @@ export default async function handler(req, res) {
     // is not arriving. Report which Anthropic-ish NAMES the function can
     // actually see — names only, never values — which distinguishes a
     // typo from a variable saved to the wrong Vercel environment.
-    const seen = Object.keys(process.env)
-      .filter((k) => /anthropic|claude/i.test(k))
-      .sort();
+    const names = Object.keys(process.env);
+    const seen = names.filter((k) => /anthropic|claude/i.test(k)).sort();
+    // The discriminator. Vercel hands functions every project variable,
+    // VITE_-prefixed ones included. If the Supabase vars ARE visible then
+    // project variables do reach this function and only the Anthropic one
+    // is absent — a wrong name, or never saved. If they are NOT visible,
+    // no project variables are reaching it at all, which means the key was
+    // added to a different Vercel project than the one serving this domain.
+    const projectVarsVisible = names.filter((k) => /^VITE_SUPABASE/.test(k)).sort();
     return res.status(503).json({
       error: "Tim isn't configured yet — ANTHROPIC_API_KEY is missing from the server's environment variables.",
       diagnostic: seen.length
-        ? `The function can see: ${seen.join(", ")} — close, but not the exact name ANTHROPIC_API_KEY.`
-        : "The function sees no Anthropic variable at all. In Vercel, check the variable is ticked for the Production environment, then redeploy.",
+        ? `Close: the function can see ${seen.join(", ")}, but not the exact name ANTHROPIC_API_KEY.`
+        : projectVarsVisible.length
+          ? `This project's own variables DO reach the function (${projectVarsVisible.join(", ")}), but there is no Anthropic one. So the name is wrong, or it was never saved — it is not a Production-tick problem.`
+          : "No project variables reach this function at all — not even the Supabase ones. The key was almost certainly added to a different Vercel project than the one serving bluejelly-pwa.vercel.app.",
     });
   }
 
