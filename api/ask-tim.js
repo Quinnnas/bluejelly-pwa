@@ -266,7 +266,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Use POST." });
   }
 
-  const key = process.env.ANTHROPIC_API_KEY;
+  // ANTHROPIC_API_KEY is the name to use. `AskTim` is an alias for the
+  // variable as it was actually created in Vercel — an API key in a
+  // variable named after the feature reads as configuration to the next
+  // person, not as a secret, so rename it when convenient and this line
+  // can go.
+  const key = process.env.ANTHROPIC_API_KEY || process.env.AskTim;
   if (!key) {
     // "It's missing" is not much help when the variable has been set but
     // is not arriving. Report which Anthropic-ish NAMES the function can
@@ -287,8 +292,6 @@ export default async function handler(req, res) {
     // entirely is invisible to the /anthropic/ match above, and three
     // rounds of "check it again" is worse than briefly listing them.
     // Remove once the key is in place.
-    const SYSTEM_PREFIX = /^(VERCEL|AWS|NODE|npm|PATH$|HOME$|HOSTNAME$|PWD$|SHLVL$|_$|LAMBDA|TZ$|LANG$|LC_|TERM$|EDITOR$|X_GOOGLE|PORT$|CI$|TURBO)/;
-    const projectNames = names.filter((k) => !SYSTEM_PREFIX.test(k)).sort();
     return res.status(503).json({
       error: "Tim isn't configured yet — ANTHROPIC_API_KEY is missing from the server's environment variables.",
       diagnostic: seen.length
@@ -296,9 +299,6 @@ export default async function handler(req, res) {
         : projectVarsVisible.length
           ? `This project's own variables DO reach the function (${projectVarsVisible.join(", ")}), but there is no Anthropic one. So the name is wrong, or it was never saved — it is not a Production-tick problem.`
           : "No project variables reach this function at all — not even the Supabase ones. The key was almost certainly added to a different Vercel project than the one serving bluejelly-pwa.vercel.app.",
-      // Names only. If the key is here under a different spelling, this
-      // is where it shows up.
-      visibleVariableNames: projectNames,
     });
   }
 
