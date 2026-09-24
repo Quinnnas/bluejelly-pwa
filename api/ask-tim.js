@@ -281,6 +281,14 @@ export default async function handler(req, res) {
     // no project variables are reaching it at all, which means the key was
     // added to a different Vercel project than the one serving this domain.
     const projectVarsVisible = names.filter((k) => /^VITE_SUPABASE/.test(k)).sort();
+    // Last resort: list the project-level variable NAMES this function can
+    // see, with Vercel's own system variables filtered out. Names only,
+    // never values. A misspelling ("ANTROPIC_API_KEY") or a different name
+    // entirely is invisible to the /anthropic/ match above, and three
+    // rounds of "check it again" is worse than briefly listing them.
+    // Remove once the key is in place.
+    const SYSTEM_PREFIX = /^(VERCEL|AWS|NODE|npm|PATH$|HOME$|HOSTNAME$|PWD$|SHLVL$|_$|LAMBDA|TZ$|LANG$|LC_|TERM$|EDITOR$|X_GOOGLE|PORT$|CI$|TURBO)/;
+    const projectNames = names.filter((k) => !SYSTEM_PREFIX.test(k)).sort();
     return res.status(503).json({
       error: "Tim isn't configured yet — ANTHROPIC_API_KEY is missing from the server's environment variables.",
       diagnostic: seen.length
@@ -288,6 +296,9 @@ export default async function handler(req, res) {
         : projectVarsVisible.length
           ? `This project's own variables DO reach the function (${projectVarsVisible.join(", ")}), but there is no Anthropic one. So the name is wrong, or it was never saved — it is not a Production-tick problem.`
           : "No project variables reach this function at all — not even the Supabase ones. The key was almost certainly added to a different Vercel project than the one serving bluejelly-pwa.vercel.app.",
+      // Names only. If the key is here under a different spelling, this
+      // is where it shows up.
+      visibleVariableNames: projectNames,
     });
   }
 
