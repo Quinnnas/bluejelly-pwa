@@ -230,9 +230,9 @@ function buildSegments(rows, series, targets = {}) {
   const week = rows[2]?.companion || rows[2];
   const month = rows[3]?.companion || rows[3];
   return [
-    { key: "today", label: "Today", row: rows[0], series: series.today, target: targets.today ?? TARGET_FALLBACK.today },
-    { key: "week", label: "This week", row: week, series: series.week, target: targets.d7 ?? TARGET_FALLBACK.d7 },
-    { key: "month", label: "This month", row: month, series: series.month, target: targets.d30 ?? TARGET_FALLBACK.d30 },
+    { key: "today", label: "Today", row: rows[0], series: series.today, profits: series.profit?.today, margins: series.margin?.today, elapsed: series.elapsed?.today, unit: "hour", target: targets.today ?? TARGET_FALLBACK.today },
+    { key: "week", label: "This week", row: week, series: series.week, profits: series.profit?.week, margins: series.margin?.week, elapsed: series.elapsed?.week, unit: "day", target: targets.d7 ?? TARGET_FALLBACK.d7 },
+    { key: "month", label: "This month", row: month, series: series.month, profits: series.profit?.month, margins: series.margin?.month, elapsed: series.elapsed?.month, unit: "week", target: targets.d30 ?? TARGET_FALLBACK.d30 },
   ];
 }
 
@@ -327,7 +327,12 @@ const EMPTY_DATA = Object.freeze({
     { ...emptyRow("Last week", "Last week"), companion: emptyRow("This week so far", "This week") },
     { ...emptyRow("Last month", "Last month"), companion: emptyRow("This month so far", "This month") },
   ],
-  series: { today: [0, 0], week: [0, 0], month: [0, 0] },
+  series: {
+    today: [0, 0], week: [0, 0], month: [0, 0],
+    profit: { today: [0, 0], week: [0, 0], month: [0, 0] },
+    margin: { today: [0, 0], week: [0, 0], month: [0, 0] },
+    elapsed: { today: 1, week: 1, month: 1 },
+  },
   orders: [], offers: [], rawSales: [], targets: {}, recommendations: [],
   returns: {
     lines: 0, units: 0, defectUnits: 0, cancelUnits: 0, otherUnits: 0,
@@ -350,31 +355,105 @@ function buildReport(rows) {
 
 // Cumulative curve scaled to the real period total, with a target line
 // plotted on the same axis so the curve visibly climbs toward the goal.
-function heroChart(series, total, target, W = 300, H = 92) {
-  const padT = 16, padB = 8;
-  let acc = 0;
-  const cum = series.map((v) => (acc += v));
-  const rawLast = cum[cum.length - 1] || 1;
-  const scaled = cum.map((v) => (v / rawLast) * total);
-  const yMax = Math.max(total, target) * 1.14 || 1;
-  const yFor = (val) => padT + (1 - val / yMax) * (H - padT - padB);
-  const pts = scaled.map((v, i) => ({ x: (i / (scaled.length - 1)) * W, y: yFor(v) }));
-  let line = `M ${pts[0].x},${pts[0].y}`;
-  for (let i = 1; i < pts.length; i++) {
-    const p0 = pts[i - 1], p1 = pts[i];
-    const ex = (p0.x + p1.x) / 2, ey = (p0.y + p1.y) / 2;
-    line += ` Q ${p0.x},${p0.y} ${ex},${ey}`;
-  }
-  line += ` L ${pts[pts.length - 1].x},${pts[pts.length - 1].y}`;
-  const area = `${line} L ${W},${H} L 0,${H} Z`;
-  return { line, area, end: pts[pts.length - 1], targetY: yFor(target), hit: total >= target };
+/**
+ * The hero chart: one bar per bucket — 24 hours today, 7 days this week,
+ * 4 weeks this month.
+ *
+ * EVERY bucket gets a bar, including the ones that have not happened yet.
+ * They are drawn as a faint full-height track with the value painted over
+ * it, so a day in progress reads as a day in progress: seventeen filled
+ * slots and seven empty ones, rather than a chart that stops early.
+ *
+ * That framing is also why the hour in progress is included now. On its
+ * own, a stub bar at the right-hand edge read as trade having stopped;
+ * sitting in a row of 24 visible slots it obviously means "part way
+ * through".
+ *
+ * The dotted line is a PACE, not the raw target: against per-bucket values
+ * a R35,000 day-target would sit twenty times above every hourly bar. It
+ * is the target divided by the buckets in the period, so R1,458/hour.
+ *
+ * All bars are the same grey. White is reserved for the tapped one, so it
+ * means exactly one thing.
+ *
+ * A margin line runs over the bars on its own scale. A percentage and a
+ * rand value cannot share an axis, so the line shows SHAPE — which hours
+ * earned well — and the tap readout gives the number.
+ */
+/**
+ * What to call a bucket when its bar is tapped.
+ *
+ * Weeks are the app's 8-day blocks from the 1st, not calendar weeks, so
+ * they are numbered rather than dated — "Week 3" is honest where
+ * "15-22 Sept" would imply a calendar week it is not.
+ */
+function bucketLabel(key, i, now = new Date()) {
+  if (key === "today") return `${String(i).padStart(2, "0")}:00`;
+  if (key === "week") return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i] || "";
+  return `Week ${i + 1}`;
 }
+
+function heroBars(series, target, margins = [], W = 300, H = 92) {
+  const padT = 16, padB = 8;
+  const all = Array.isArray(series) && series.length ? series : [0];
+
+  const pace = target > 0 ? target / all.length : 0;
+  const yMax = Math.max(...all, pace, 1) * 1.14;
+  const yFor = (v) => padT + (1 - v / yMax) * (H - padT - padB);
+  const floorY = H - padB;
+
+  const slot = W / all.length;
+  // A visible gap between bars, but never so thin one disappears on a
+  // 24-hour view.
+  const width = Math.max(1.5, slot * 0.68);
+
+  const bars = all.map((v, i) => {
+    const y = yFor(v);
+    return {
+      i, v,
+      x: i * slot + (slot - width) / 2,
+      w: width,
+      y, h: Math.max(0, floorY - y),
+      // Full-height track, so an empty slot is still visibly a slot.
+      trackY: padT, trackH: floorY - padT,
+      // Wide invisible target for fingers; a 4px bar is not tappable.
+      hitX: i * slot, hitW: slot,
+    };
+  });
+
+  // The margin line rides on its OWN scale, not the rand one — a
+  // percentage and a rand value share no axis. Scaled to the best margin
+  // in the period so the shape is readable; the tap readout gives the
+  // actual number, which is what the line cannot.
+  const marginMax = Math.max(...margins.map((m) => Math.abs(m)), 1) * 1.25;
+  const marginY = (m) => padT + (1 - m / marginMax) * (floorY - padT);
+  const points = bars
+    .map((bar, i) => ({ bar, m: margins[i] }))
+    // Only buckets that actually shipped something have a margin. Drawing
+    // a 0% for the rest would slam the line to the floor overnight and
+    // read as a collapse in profitability rather than as no dispatches.
+    .filter((pt) => pt.m !== undefined && pt.m !== 0)
+    .map((pt) => `${pt.bar.x + pt.bar.w / 2},${marginY(pt.m)}`);
+
+  return {
+    bars, floorY,
+    targetY: yFor(pace),
+    pace: Math.round(pace),
+    marginPath: points.length > 1 ? `M ${points.join(" L ")}` : null,
+    marginMax: Math.round(marginMax * 10) / 10,
+  };
+}
+
+// The hero chart's viewBox height, shared by the SVG and its hit areas.
+const H_CHART = 92;
 
 function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, currentEmail = USER_EMAIL, onUpdateName = () => {} }) {
   const [seg, setSeg] = useState(0);
   const [open, setOpen] = useState(null);
   const [toast, setToast] = useState("");
   const [showTarget, setShowTarget] = useState(false);
+  // Which bar's value is being shown; null when none is tapped.
+  const [barTap, setBarTap] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reportsOpen, setReportsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -571,6 +650,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const ORDERS_PAGE = 100;
   const [orderLimit, setOrderLimit] = useState(ORDERS_PAGE);
   useEffect(() => { setOrderLimit(ORDERS_PAGE); }, [orderFilter]);
+  useEffect(() => { setBarTap(null); }, [seg]);
   useEffect(() => { setReturnLimit(RETURNS_PAGE); }, [returnsTab]);
   const [feesVat, setFeesVat] = useState(true);
   const [profitVat, setProfitVat] = useState(true);
@@ -705,7 +785,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   // Both guarded: with real data a period can legitimately have no sales
   // (and a target can be unset), which used to render "R NaN" / "NaN%".
   const avg = row.qty > 0 ? Math.round(row.value / row.qty) : 0;
-  const sp = heroChart(active.series, row.value, active.target);
+  const sp = heroBars(active.series, active.target, active.margins);
   const pct = active.target > 0 ? Math.round((row.value / active.target) * 100) : 0;
 
   // Notifications derived from the Notifications settings
@@ -838,24 +918,82 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                   <stop offset="100%" stopColor="rgba(255,255,255,0)" />
                 </linearGradient>
               </defs>
-              <path d={sp.area} fill="url(#fill)" />
+
               {/* target line */}
               {tog.showTargetLine && (
                 <line x1="0" y1={sp.targetY} x2="300" y2={sp.targetY} stroke={GOLD} strokeWidth="1.5" strokeDasharray="4 5" vectorEffect="non-scaling-stroke" opacity="0.95" />
               )}
-              <path d={sp.line} fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-              <circle cx={sp.end.x} cy={sp.end.y} r="4.5" fill="#fff" />
-              <circle cx={sp.end.x} cy={sp.end.y} r="9" fill="rgba(255,255,255,0.18)" />
+              {/* A faint track for every bucket, so an hour that has not
+                  happened yet is still visibly a slot. */}
+              {sp.bars.map((bar) => (
+                <rect key={`t${bar.i}`} x={bar.x} y={bar.trackY} width={bar.w} height={bar.trackH}
+                      rx="1" fill="rgba(255,255,255,0.06)" />
+              ))}
+              {/* Every bar the same grey; white means one thing only, and
+                  that is "you tapped this". Highlighting the peak as well
+                  competed with the selection for the eye. */}
+              {sp.bars.map((bar) => (
+                <rect key={bar.i} x={bar.x} y={bar.y} width={bar.w} height={bar.h} rx="1"
+                      fill={barTap === bar.i ? "#fff" : "rgba(255,255,255,0.55)"} />
+              ))}
+              {/* Margin, on its own scale. Thin and blue so it reads as a
+                  second series rather than competing with the bars. */}
+              {sp.marginPath && (
+                <path d={sp.marginPath} fill="none" stroke="#4C8DFF" strokeWidth="1.6"
+                      strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke"
+                      opacity="0.9" />
+              )}
+              {/* Full-height hit areas: a 4px bar is not a tap target, and
+                  an empty hour still has a value worth reporting (R0). */}
+              {sp.bars.map((bar) => (
+                <rect key={`h${bar.i}`} x={bar.hitX} y="0" width={bar.hitW} height={H_CHART}
+                      fill="transparent" style={{ cursor: "pointer" }}
+                      onClick={() => setBarTap((cur) => (cur === bar.i ? null : bar.i))} />
+              ))}
               {/* wide invisible hit area for tapping the target line */}
               {tog.showTargetLine && (
                 <line x1="0" y1={sp.targetY} x2="300" y2={sp.targetY} stroke="transparent" strokeWidth="22" vectorEffect="non-scaling-stroke" style={{ cursor: "pointer" }} onClick={() => setShowTarget((v) => !v)} />
               )}
             </svg>
+            {/* Tapped bar readout. Sits above the chart rather than
+                floating by the bar: at 24 bars a tooltip next to one of
+                them clips off the edge at both ends. */}
+            {barTap !== null && sp.bars[barTap] && (
+              <div style={{ position: "absolute", top: -6, left: 0, right: 0, display: "flex", justifyContent: "center", pointerEvents: "none" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 7, background: "rgba(12,15,20,0.9)", border: "1px solid " + PANEL_BORDER, borderRadius: 9, padding: "4px 10px", backdropFilter: "blur(4px)" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.55)", letterSpacing: "0.4px" }}>
+                    {bucketLabel(active.key, barTap)}
+                  </span>
+                  <span style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", ...NUM }}>
+                    {rand(sp.bars[barTap].v)}
+                  </span>
+                  {/* Profit and margin are shipped-units-only, same as the
+                      Gross column. An hour still packing shows a dash
+                      rather than R0, which would read as "made nothing". */}
+                  {(active.margins?.[barTap] ?? 0) !== 0 ? (
+                    <>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: POS, ...NUM }}>
+                        {rand(active.profits?.[barTap] ?? 0)}
+                      </span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "#4C8DFF", ...NUM }}>
+                        {active.margins[barTap]}%
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)" }}>not shipped yet</span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* target label — left aligned, shown on tap */}
             {tog.showTargetLine && showTarget && (
               <div style={{ position: "absolute", top: sp.targetY, left: 0, transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 6, background: "rgba(242,193,78,0.14)", border: "1px solid rgba(242,193,78,0.4)", borderRadius: 8, padding: "3px 8px", backdropFilter: "blur(4px)" }}>
-                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.7px", color: GOLD }}>TARGET</span>
-                <span style={{ fontSize: 11.5, fontWeight: 600, color: "#fff", ...NUM }}>{rand(active.target)}</span>
+                {/* Bars plot per-bucket values, so the line is a pace and
+                    must not be labelled with the whole-period target. */}
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.7px", color: GOLD }}>PACE</span>
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: "#fff", ...NUM }}>{rand(sp.pace)}/{active.unit}</span>
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.5)" }}>for {rand(active.target)}</span>
               </div>
             )}
           </div>

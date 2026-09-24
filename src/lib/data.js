@@ -209,7 +209,7 @@ export async function loadStoreData(now = Date.now()) {
 
   return {
     rows: buildRows(rawSales, now, coverageStart, costsBySku, costHistory),
-    series: buildSeries(rawSales, now),
+    series: buildSeries(rawSales, now, costsBySku, costHistory),
     orders: buildOrders(rawSales, costsBySku, costHistory),
     returns: buildReturns(returnsRes.data || [], rawSales, costsBySku),
     offers,

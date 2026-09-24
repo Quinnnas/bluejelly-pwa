@@ -168,6 +168,20 @@ export function observedFeeRate(sales) {
  * further back is genuinely incomplete and gets flagged `partial` rather
  * than quietly under-reporting.
  */
+/**
+ * What a sale's units cost us, landed: the spreadsheet's product cost at
+ * the sale's own date, plus the offer's current cost to ship into
+ * Takealot's warehouse.
+ *
+ * Shared by the dashboard table and the chart. Two copies of this would
+ * drift, and the pair are printed next to each other on the same screen.
+ */
+function landedCost(costsBySku, costHistory, s) {
+  const c = costRecord(costsBySku, s.sku);
+  const at = costAt(costHistory, c, s.sku, s._date);
+  return (num(at?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
+}
+
 function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate, costHistory = new Map()) {
   let qty = 0;
   let value = 0;
@@ -209,9 +223,7 @@ function computeWindow(sales, w, coverageStart, costsBySku, fallbackRate, costHi
     // Product cost is read AT THE SALE'S DATE, so a spreadsheet update
     // stops rewriting last month's profit. Shipping has no history — it
     // comes from the live offer — so it stays current.
-    const c = costRecord(costsBySku, s.sku);
-    const at = costAt(costHistory, c, s.sku, s._date);
-    const unitCost = (num(at?.cost_incl_vat) + num(c?.shipping_cost)) * num(s.quantity);
+    const unitCost = landedCost(costsBySku, costHistory, s);
 
     if (orderStatusKey(s.status) === "shipped") {
       shippedQty += num(s.quantity);
@@ -327,12 +339,41 @@ export function buildRows(sales, now = Date.now(), coverageStart = null, costsBy
 }
 
 /**
- * Sparkline buckets. heroChart() turns these into a cumulative curve
- * scaled to the period total, so only the shape matters, not the count.
+ * Per-bucket sales for the hero chart, one bucket per bar:
+ *
+ *   today  24 hours
+ *   week    7 days
+ *   month   4 weeks
+ *
+ * The month is in WEEKS, not days — 30 daily bars on a phone are
+ * hairlines, and the question a month asks is which week was strong, not
+ * which Tuesday.
+ *
+ * Those weeks are blocks counted from the 1st, NOT calendar
+ * Monday-to-Sunday weeks. A calendar week straddles the month boundary,
+ * so the first bar would cover however many days the month happened to
+ * start with — a short bar that looks like a bad week rather than a
+ * partial one.
+ *
+ * Four blocks means 8 days each for a 30- or 31-day month, so the last
+ * one is a day or two short. Unavoidable: no month divides into four
+ * equal weeks. The alternative — three 7-day blocks and a 9-day fourth —
+ * makes the last bar tall for the wrong reason.
  */
-export function buildSeries(sales, now = Date.now()) {
+export function buildSeries(sales, now = Date.now(), costsBySku = new Map(), costHistory = new Map()) {
+  // Each bucket carries three figures, because the chart shows all three:
+  // sales value across every unit sold, profit on the units that actually
+  // shipped, and the margin those shipped units earned.
+  //
+  // Margin is profit over SHIPPED value, not over total value. An hour
+  // whose orders are all still packing has no margin yet — dividing by
+  // everything sold would report a real margin as a poor one purely
+  // because Takealot had not dispatched yet.
   const bucket = (from, count, sizeMs) => {
-    const out = new Array(count).fill(0);
+    const value = new Array(count).fill(0);
+    const profit = new Array(count).fill(0);
+    const shipped = new Array(count).fill(0);
+
     for (const s of sales) {
       // Same exclusion as buildRows — the chart and the table must agree,
       // and there is a test asserting exactly that.
@@ -340,9 +381,22 @@ export function buildSeries(sales, now = Date.now()) {
       const offset = s._date.getTime() - from.getTime();
       if (offset < 0) continue;
       const i = Math.min(count - 1, Math.floor(offset / sizeMs));
-      out[i] += s._value;
+      value[i] += s._value;
+
+      // Profit is shipped units only, at fees actually charged — the same
+      // rule the Gross Profit column follows.
+      if (orderStatusKey(s.status) === "shipped") {
+        shipped[i] += s._value;
+        profit[i] += s._value - s._fees - landedCost(costsBySku, costHistory, s);
+      }
     }
-    return out.map((v) => Math.round(v));
+
+    return {
+      value: value.map((v) => Math.round(v)),
+      profit: profit.map((v) => Math.round(v)),
+      // Guarded: an hour with nothing shipped divides by zero.
+      margin: profit.map((v, i) => (shipped[i] > 0 ? Math.round((v / shipped[i]) * 1000) / 10 : 0)),
+    };
   };
 
   // Calendar-aligned, matching the hero's "Today / This week / This
@@ -354,10 +408,38 @@ export function buildSeries(sales, now = Date.now()) {
     1, Math.round((nextMonth.getTime() - monthStart.getTime()) / 86400000)
   );
 
+  // How many buckets have started, the current one included. The chart
+  // draws a running total, so the last step is "so far today" and lands
+  // exactly on the figure printed above it. Hours still to come are left
+  // off — carried forward flat they would read as a day already finished.
+  const dayStart = sastDayStart(0, now);
+  const weekStart = sastWeekStart(0, now);
+  const startedBuckets = (from, sizeMs, cap) =>
+    Math.min(cap, Math.max(1, Math.floor((now - from.getTime()) / sizeMs) + 1));
+
+  // Four bars a month, so the block is 8 days for a 30- or 31-day month
+  // and 7 for February.
+  const MONTH_BARS = 4;
+  const daysPerBlock = Math.ceil(daysInMonth / MONTH_BARS);
+
+  const today = bucket(dayStart, 24, 3600000);
+  const week = bucket(weekStart, 7, 86400000);
+  const month = bucket(monthStart, MONTH_BARS, daysPerBlock * 86400000);
+
   return {
-    today: bucket(sastDayStart(0, now), 24, 3600000),
-    week: bucket(sastWeekStart(0, now), 7, 86400000),
-    month: bucket(monthStart, daysInMonth, 86400000),
+    // `today` / `week` / `month` stay the value arrays they always were,
+    // so every existing reader keeps working; profit and margin sit
+    // alongside rather than changing the shape underneath them.
+    today: today.value,
+    week: week.value,
+    month: month.value,
+    profit: { today: today.profit, week: week.profit, month: month.profit },
+    margin: { today: today.margin, week: week.margin, month: month.margin },
+    elapsed: {
+      today: startedBuckets(dayStart, 3600000, 24),
+      week: startedBuckets(weekStart, 86400000, 7),
+      month: startedBuckets(monthStart, daysPerBlock * 86400000, MONTH_BARS),
+    },
   };
 }
 

@@ -451,7 +451,7 @@ test("the month series matches this-month-so-far and spans the month", () => {
     sale("2026-08-15T08:00:00Z", { id: "b", unit_price: 150 }),
   ]);
   const series = buildSeries(s, NOW);
-  assert.equal(series.month.length, 31, "August has 31 days");
+  assert.equal(series.month.length, 4, "a month is always four bars");
   assert.equal(
     series.month.reduce((a, b) => a + b, 0),
     buildRows(s, NOW)[3].companion.value
@@ -934,6 +934,141 @@ test("a rename does not split one product into two", () => {
   assert.equal(r.products[0].defectUnits, 2, "both returns counted together");
   assert.equal(r.products[0].sold, 12, "10 shipped + the 2 that shipped and came back");
   assert.equal(r.products[0].defectRate, 16.7, "2 of 12, not 1 of 6 twice over");
+});
+
+test("the hero series is per-bucket, not a running total", () => {
+  // It used to be cumulative, which drew the same rising curve every day
+  // whenever the trade actually happened.
+  const s = prepareSales([
+    sale("2026-08-15T06:00:00Z", { id: "a", unit_price: 100, line_total: 100, status: "Shipped to Customer" }),
+    sale("2026-08-15T06:30:00Z", { id: "b", unit_price: 200, line_total: 200, status: "Shipped to Customer" }),
+    sale("2026-08-15T10:00:00Z", { id: "c", unit_price: 50, line_total: 50, status: "Shipped to Customer" }),
+  ]);
+  // 06:00Z is 08:00 SAST, 10:00Z is 12:00 SAST.
+  const { today } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime());
+  assert.equal(today[8], 300, "both 08:00 sales, added together");
+  assert.equal(today[12], 50, "and the noon one on its own, not 350");
+  assert.equal(today[9], 0, "a quiet hour is genuinely zero");
+});
+test("the running total includes the hour in progress", () => {
+  // The chart is cumulative, so the last step is "so far today" and has
+  // to land on the figure printed above it. Hours still to come are left
+  // off — carried forward flat they read as a day already finished.
+  const at = (iso) => buildSeries([], new Date(iso).getTime()).elapsed;
+  assert.equal(at("2026-08-15T16:30:00+02:00").today, 17, "hours 0-16, the current one included");
+  assert.equal(at("2026-08-15T00:05:00+02:00").today, 1, "five minutes in, one bucket");
+  assert.equal(at("2026-08-15T23:59:00+02:00").today, 24, "never more than the day holds");
+});
+test("elapsed never exceeds the buckets in the period", () => {
+  const s = buildSeries([], new Date("2026-08-31T23:00:00+02:00").getTime());
+  assert.equal(s.month.length, 4, "a month is always four bars");
+  assert.ok(s.elapsed.month <= s.month.length);
+  assert.ok(s.elapsed.week <= 7);
+  assert.equal(s.elapsed.week, 1, "the 31st of August 2026 is a Monday, so the week has just begun");
+});
+test("a fresh period still has a bucket to draw", () => {
+  // At 00:01 on a Monday there is one hour and one day. A zero-length
+  // series divides by zero when the chart spaces its points.
+  const s = buildSeries([], new Date("2026-08-17T00:01:00+02:00").getTime());
+  assert.equal(s.elapsed.today, 1);
+  assert.equal(s.elapsed.week, 1);
+  assert.equal(s.elapsed.month, 3, "the 17th opens the third 8-day block");
+});
+test("the chart and the table still agree on what counts", () => {
+  // Same exclusion rule as buildRows: a cancelled sale is in neither.
+  const s = prepareSales([
+    sale("2026-08-15T06:00:00Z", { id: "ok", unit_price: 100, line_total: 100, status: "Shipped to Customer" }),
+    // counts_toward_velocity is what the sync stores for cancel/return/
+    // transfer; the status string alone is not what the chart filters on.
+    sale("2026-08-15T06:00:00Z", { id: "no", unit_price: 999, line_total: 999, status: "Cancelled by Customer", counts: false }),
+  ]);
+  const { today } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime());
+  assert.equal(today[8], 100, "the cancellation is not on the chart");
+});
+
+test("the month is bucketed by week, not by day", () => {
+  // 30 daily bars on a phone are hairlines, and the question a month asks
+  // is which WEEK was strong.
+  const s = buildSeries([], new Date("2026-09-24T12:00:00+02:00").getTime());
+  assert.equal(s.month.length, 4, "always four bars, whatever the month's length");
+  assert.equal(s.week.length, 7, "the week is still daily");
+  assert.equal(s.today.length, 24, "and today is still hourly");
+});
+test("a month's weeks are blocks from the 1st, not calendar weeks", () => {
+  // A calendar week straddles the month boundary, so the first bar would
+  // cover however many days the month happened to start with — a short bar
+  // that reads as a bad week rather than a partial one. September 2026 has
+  // 30 days, so four bars means 8-day blocks: 1-8, 9-16, 17-24, 25-30.
+  const s = prepareSales([
+    sale("2026-09-01T08:00:00Z", { id: "a", unit_price: 100, line_total: 100, status: "Shipped to Customer" }),
+    sale("2026-09-08T08:00:00Z", { id: "b", unit_price: 200, line_total: 200, status: "Shipped to Customer" }),
+    sale("2026-09-09T08:00:00Z", { id: "c", unit_price: 400, line_total: 400, status: "Shipped to Customer" }),
+  ]);
+  const { month } = buildSeries(s, new Date("2026-09-30T23:00:00+02:00").getTime());
+  assert.equal(month[0], 300, "the 1st and the 8th share the first block");
+  assert.equal(month[1], 400, "the 9th starts the second");
+  assert.equal(month.length, 4);
+});
+test("the week in progress is the last started block", () => {
+  const at = (iso) => buildSeries([], new Date(iso).getTime()).elapsed.month;
+  assert.equal(at("2026-09-01T09:00:00+02:00"), 1, "the 1st is in block one");
+  assert.equal(at("2026-09-08T23:00:00+02:00"), 1, "so is the 8th");
+  assert.equal(at("2026-09-09T00:30:00+02:00"), 2, "the 9th opens block two");
+  assert.equal(at("2026-09-24T12:00:00+02:00"), 3, "the 24th is in block three");
+  assert.equal(at("2026-09-30T23:00:00+02:00"), 4, "and the last block never overruns");
+});
+
+test("each bucket carries profit and margin, not just value", () => {
+  const s = prepareSales([withFees("2026-08-15T06:00:00Z", {
+    quantity: 1, unit_price: 300, line_total: 300, status: "Shipped to Customer",
+  })]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100, shipping_cost: 20 }]]);
+  const { today, profit, margin } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime(), costs);
+  assert.equal(today[8], 300, "08:00 SAST");
+  assert.equal(profit.today[8], 300 - 55 - 120, "value less fees less landed cost");
+  assert.equal(margin.today[8], 41.7, "125 of 300, to one decimal");
+});
+test("the chart's profit matches the table's Gross column", () => {
+  // They sit on the same screen; two implementations of profit would
+  // drift and one of them would be wrong.
+  const s = prepareSales([
+    withFees("2026-08-15T06:00:00Z", { id: "a", quantity: 2, unit_price: 300, line_total: 600, status: "Shipped to Customer" }),
+    withFees("2026-08-15T07:00:00Z", { id: "b", quantity: 1, unit_price: 300, line_total: 300, status: "Preparing for Customer" }),
+  ]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100, shipping_cost: 20 }]]);
+  const now = new Date("2026-08-15T20:00:00+02:00").getTime();
+  const { profit } = buildSeries(s, now, costs);
+  const row = buildRows(s, now, null, costs)[0];
+  assert.equal(profit.today.reduce((a, b2) => a + b2, 0), row.profit);
+});
+test("margin is over SHIPPED value, not everything sold", () => {
+  // An hour whose orders are all still packing has earned no margin yet.
+  // Dividing by everything sold would report a real margin as a poor one
+  // purely because Takealot had not dispatched.
+  const s = prepareSales([
+    withFees("2026-08-15T06:00:00Z", { id: "a", quantity: 1, unit_price: 300, line_total: 300, status: "Shipped to Customer" }),
+    sale("2026-08-15T06:30:00Z", { id: "b", quantity: 1, unit_price: 700, line_total: 700, status: "Preparing for Customer" }),
+  ]);
+  const costs = new Map([["SKU1", { cost_incl_vat: 100, shipping_cost: 20 }]]);
+  const { today, margin } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime(), costs);
+  assert.equal(today[8], 1000, "value counts both");
+  assert.equal(margin.today[8], 41.7, "but margin only the shipped 300");
+});
+test("an hour with nothing shipped reports 0% rather than dividing by zero", () => {
+  const s = prepareSales([
+    sale("2026-08-15T06:00:00Z", { quantity: 1, unit_price: 300, line_total: 300, status: "Preparing for Customer" }),
+  ]);
+  const { today, profit, margin } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime());
+  assert.equal(today[8], 300);
+  assert.equal(profit.today[8], 0);
+  assert.equal(margin.today[8], 0);
+  assert.ok(Number.isFinite(margin.today[8]));
+});
+test("profit and margin exist for every period, at the right length", () => {
+  const s = buildSeries([], new Date("2026-09-24T12:00:00+02:00").getTime());
+  assert.equal(s.profit.today.length, 24);
+  assert.equal(s.margin.week.length, 7);
+  assert.equal(s.margin.month.length, 4);
 });
 
 console.log(
