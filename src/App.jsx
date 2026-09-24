@@ -462,6 +462,11 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [nameDraft, setNameDraft] = useState(currentName);
   const [defaultPeriod, setDefaultPeriod] = useState(0);
   const [periodPickerOpen, setPeriodPickerOpen] = useState(false);
+  const [targetsOpen, setTargetsOpen] = useState(false);
+  // Drafts are strings so the field can be empty while being retyped; a
+  // number state would snap a half-deleted "3500" back to 3500.
+  const [targetDraft, setTargetDraft] = useState({});
+  const [targetSaving, setTargetSaving] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [readIds, setReadIds] = useState([]);
   const [autoOpen, setAutoOpen] = useState(false);
@@ -580,6 +585,59 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const timScrollRef = React.useRef(null);
   const timFileRef = React.useRef(null);
 
+  // The three periods the dashboard tracks, and the `targets` rows behind
+  // them. Keys match the table's `period` column, not the segment keys.
+  const TARGET_FIELDS = [
+    { key: "today", label: "Today" },
+    { key: "d7", label: "This week" },
+    { key: "d30", label: "This month" },
+  ];
+
+  const openTargets = () => {
+    // Seed from what is live, falling back to the same defaults the
+    // dashboard uses when the table has no row.
+    setTargetDraft({
+      today: String(D.targets.today ?? TARGET_FALLBACK.today),
+      d7: String(D.targets.d7 ?? TARGET_FALLBACK.d7),
+      d30: String(D.targets.d30 ?? TARGET_FALLBACK.d30),
+    });
+    setTargetsOpen((v) => !v);
+  };
+
+  const saveTargets = async () => {
+    const rows = [];
+    for (const f of TARGET_FIELDS) {
+      // Strip spaces and separators people type into a rands field.
+      const raw = String(targetDraft[f.key] ?? "").replace(/[\s,R]/gi, "");
+      const value = Number(raw);
+      if (!raw || !Number.isFinite(value) || value < 0) {
+        flash(`${f.label} target needs to be a number`);
+        return;
+      }
+      rows.push({ period: f.key, sales_value: Math.round(value) });
+    }
+
+    setTargetSaving(true);
+    // updated_at is set explicitly: a `default now()` only fires on
+    // INSERT, and these rows are upserted, so it would otherwise freeze
+    // at the date the row was created.
+    const stamp = new Date().toISOString();
+    const { error } = await supabase
+      .from("targets")
+      .upsert(rows.map((r) => ({ ...r, updated_at: stamp })), { onConflict: "period" });
+    setTargetSaving(false);
+
+    if (error) {
+      flash("Couldn't save targets — " + error.message);
+      return;
+    }
+    setTargetsOpen(false);
+    flash("Targets saved");
+    // Re-read so the hero, the pace line and the percentages all move
+    // together rather than drifting until the next refresh.
+    refreshData();
+  };
+
   const sendToTim = React.useCallback(async (text) => {
     const question = (text || "").trim();
     // A picture on its own is a fair question — "what is this?" — so an
@@ -651,6 +709,15 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [orderLimit, setOrderLimit] = useState(ORDERS_PAGE);
   useEffect(() => { setOrderLimit(ORDERS_PAGE); }, [orderFilter]);
   useEffect(() => { setBarTap(null); }, [seg]);
+  // The readout clears itself after three seconds. It sits over the top of
+  // the chart, so leaving it up hides the bars it is describing — and on a
+  // phone there is nowhere convenient to tap to dismiss it. Re-tapping
+  // restarts the timer, because the effect re-runs on every change.
+  useEffect(() => {
+    if (barTap === null) return undefined;
+    const t = setTimeout(() => setBarTap(null), 3000);
+    return () => clearTimeout(t);
+  }, [barTap]);
   useEffect(() => { setReturnLimit(RETURNS_PAGE); }, [returnsTab]);
   const [feesVat, setFeesVat] = useState(true);
   const [profitVat, setProfitVat] = useState(true);
@@ -721,6 +788,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { title: "Dashboard settings", rows: [
       { type: "toggle", label: "Show target line", key: "showTargetLine" },
       { type: "toggle", label: "Show sales chart", key: "showChart" },
+      { type: "targets", label: "Sales targets" },
       { type: "period", label: "Default period" },
     ]},
     { title: "Account settings", rows: [
@@ -1306,6 +1374,46 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 18, overflow: "hidden" }}>
                   {g.rows.map((r, ri) => {
                     const topBorder = ri === 0 ? "none" : "1px solid " + PANEL_HAIR;
+                    if (r.type === "targets") {
+                      return (
+                        <div key={r.label} style={{ borderTop: topBorder }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "15px 16px" }}>
+                            <span style={{ fontSize: 15.5, color: "#fff", fontWeight: 500 }}>{r.label}</span>
+                            <button onClick={openTargets} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
+                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600, ...NUM }}>{rand(D.targets.today ?? TARGET_FALLBACK.today)}/day</span>
+                              <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: targetsOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
+                            </button>
+                          </div>
+                          <div style={{ maxHeight: targetsOpen ? 260 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
+                            {TARGET_FIELDS.map((f) => (
+                              <div key={f.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px 12px 28px", borderTop: "1px solid " + PANEL_HAIR }}>
+                                <span style={{ fontSize: 14.5, color: "rgba(255,255,255,0.7)" }}>{f.label}</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ fontSize: 14, color: "rgba(255,255,255,0.4)" }}>R</span>
+                                  <input
+                                    value={targetDraft[f.key] ?? ""}
+                                    onChange={(e) => setTargetDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                                    /* numeric keypad on a phone, but still a
+                                       text field so a part-typed value is not
+                                       rewritten under the cursor */
+                                    inputMode="numeric"
+                                    style={{ width: 104, textAlign: "right", background: "rgba(255,255,255,0.06)", border: "1px solid " + PANEL_BORDER, borderRadius: 9, padding: "7px 10px", color: "#fff", fontSize: 14.5, fontFamily: FONT, outline: "none", ...NUM }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                            <div style={{ display: "flex", gap: 9, padding: "12px 16px 14px 28px", borderTop: "1px solid " + PANEL_HAIR }}>
+                              <button onClick={saveTargets} disabled={targetSaving} style={{ flex: 1, padding: "11px 0", borderRadius: 11, border: "none", background: targetSaving ? "rgba(255,255,255,0.12)" : WA, color: targetSaving ? "rgba(255,255,255,0.5)" : "#0C0F14", fontSize: 14.5, fontWeight: 700, cursor: targetSaving ? "default" : "pointer", fontFamily: FONT }}>
+                                {targetSaving ? "Saving…" : "Save targets"}
+                              </button>
+                              <button onClick={() => setTargetsOpen(false)} style={{ padding: "11px 16px", borderRadius: 11, border: "1px solid " + PANEL_BORDER, background: "transparent", color: "rgba(255,255,255,0.7)", fontSize: 14.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
                     if (r.type === "period") {
                       return (
                         <div key={r.label} style={{ borderTop: topBorder }}>
