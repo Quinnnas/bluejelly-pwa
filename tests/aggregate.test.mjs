@@ -1071,6 +1071,37 @@ test("profit and margin exist for every period, at the right length", () => {
   assert.equal(s.margin.month.length, 4);
 });
 
+test("each bucket counts its lines and how many shipped", () => {
+  // The readout says "1 of 15 shipped". Without it an hour that sold
+  // R4,323 and banked R22 reads as a terrible hour rather than as one
+  // Takealot has barely started dispatching.
+  const s = prepareSales([
+    withFees("2026-08-15T06:00:00Z", { id: "a", unit_price: 259, line_total: 259, status: "Shipped to Customer" }),
+    sale("2026-08-15T06:10:00Z", { id: "b", unit_price: 300, line_total: 300, status: "Preparing for Customer" }),
+    sale("2026-08-15T06:20:00Z", { id: "c", unit_price: 400, line_total: 400, status: "Preparing for Customer" }),
+  ]);
+  const { lines, shippedLines } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime());
+  assert.equal(lines.today[8], 3, "all three orders landed in the 08:00 hour");
+  assert.equal(shippedLines.today[8], 1, "only one has gone out");
+});
+test("a cancelled line is in neither count", () => {
+  // Same exclusion as everywhere else: it never sold, so it is not part
+  // of "3 of 5 shipped".
+  const s = prepareSales([
+    withFees("2026-08-15T06:00:00Z", { id: "a", unit_price: 100, line_total: 100, status: "Shipped to Customer" }),
+    sale("2026-08-15T06:05:00Z", { id: "x", unit_price: 999, line_total: 999, status: "Cancelled by Customer", counts: false }),
+  ]);
+  const { lines, shippedLines } = buildSeries(s, new Date("2026-08-15T20:00:00+02:00").getTime());
+  assert.equal(lines.today[8], 1);
+  assert.equal(shippedLines.today[8], 1);
+});
+test("line counts exist for every period at the right length", () => {
+  const s = buildSeries([], new Date("2026-09-25T12:00:00+02:00").getTime());
+  assert.equal(s.lines.today.length, 24);
+  assert.equal(s.shippedLines.week.length, 7);
+  assert.equal(s.lines.month.length, 4);
+});
+
 console.log(
   `\n${failures.length ? `${failures.length} FAILURE(S): ${failures.join(", ")}` : `ALL ${passed} PASS`}\n`
 );

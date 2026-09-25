@@ -230,9 +230,9 @@ function buildSegments(rows, series, targets = {}) {
   const week = rows[2]?.companion || rows[2];
   const month = rows[3]?.companion || rows[3];
   return [
-    { key: "today", label: "Today", row: rows[0], series: series.today, profits: series.profit?.today, margins: series.margin?.today, elapsed: series.elapsed?.today, unit: "hour", target: targets.today ?? TARGET_FALLBACK.today },
-    { key: "week", label: "This week", row: week, series: series.week, profits: series.profit?.week, margins: series.margin?.week, elapsed: series.elapsed?.week, unit: "day", target: targets.d7 ?? TARGET_FALLBACK.d7 },
-    { key: "month", label: "This month", row: month, series: series.month, profits: series.profit?.month, margins: series.margin?.month, elapsed: series.elapsed?.month, unit: "week", target: targets.d30 ?? TARGET_FALLBACK.d30 },
+    { key: "today", label: "Today", row: rows[0], series: series.today, profits: series.profit?.today, margins: series.margin?.today, lines: series.lines?.today, shippedLines: series.shippedLines?.today, elapsed: series.elapsed?.today, unit: "hour", target: targets.today ?? TARGET_FALLBACK.today },
+    { key: "week", label: "This week", row: week, series: series.week, profits: series.profit?.week, margins: series.margin?.week, lines: series.lines?.week, shippedLines: series.shippedLines?.week, elapsed: series.elapsed?.week, unit: "day", target: targets.d7 ?? TARGET_FALLBACK.d7 },
+    { key: "month", label: "This month", row: month, series: series.month, profits: series.profit?.month, margins: series.margin?.month, lines: series.lines?.month, shippedLines: series.shippedLines?.month, elapsed: series.elapsed?.month, unit: "week", target: targets.d30 ?? TARGET_FALLBACK.d30 },
   ];
 }
 
@@ -331,6 +331,8 @@ const EMPTY_DATA = Object.freeze({
     today: [0, 0], week: [0, 0], month: [0, 0],
     profit: { today: [0, 0], week: [0, 0], month: [0, 0] },
     margin: { today: [0, 0], week: [0, 0], month: [0, 0] },
+    lines: { today: [0, 0], week: [0, 0], month: [0, 0] },
+    shippedLines: { today: [0, 0], week: [0, 0], month: [0, 0] },
     elapsed: { today: 1, week: 1, month: 1 },
   },
   orders: [], offers: [], rawSales: [], targets: {}, recommendations: [],
@@ -1101,9 +1103,8 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                     {rand(sp.bars[barTap].v)}
                   </span>
                   {/* Profit and margin are shipped-units-only, same as the
-                      Gross column. An hour still packing shows a dash
-                      rather than R0, which would read as "made nothing". */}
-                  {(active.margins?.[barTap] ?? 0) !== 0 ? (
+                      Gross column. */}
+                  {(active.margins?.[barTap] ?? 0) !== 0 && (
                     <>
                       <span style={{ fontSize: 13, fontWeight: 700, color: POS, ...NUM }}>
                         {rand(active.profits?.[barTap] ?? 0)}
@@ -1112,10 +1113,21 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                         {active.margins[barTap]}%
                       </span>
                     </>
-                  ) : (
-                    <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)" }}>not shipped yet</span>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* How much of the bucket has actually gone out. An hour that
+                sold R4,323 and banked R22 reads as a terrible hour until
+                you know that 14 of its 15 orders are still in the
+                warehouse — profit only lands when Takealot dispatches. */}
+            {barTap !== null && sp.bars[barTap] && (active.lines?.[barTap] ?? 0) > 0 && (
+              <div style={{ position: "absolute", top: 20, left: 0, right: 0, display: "flex", justifyContent: "center", pointerEvents: "none" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 600, color: "rgba(255,255,255,0.45)", background: "rgba(12,15,20,0.9)", borderRadius: 7, padding: "2px 8px" }}>
+                  {active.shippedLines?.[barTap] ?? 0} of {active.lines[barTap]} shipped
+                  {(active.shippedLines?.[barTap] ?? 0) < active.lines[barTap] ? " · rest still packing" : ""}
+                </span>
               </div>
             )}
 

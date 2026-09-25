@@ -373,6 +373,11 @@ export function buildSeries(sales, now = Date.now(), costsBySku = new Map(), cos
     const value = new Array(count).fill(0);
     const profit = new Array(count).fill(0);
     const shipped = new Array(count).fill(0);
+    // Line counts, so the tap can say "1 of 15 shipped". Without it, an
+    // hour that has sold R4,323 and banked R22 reads as a terrible hour
+    // rather than as one Takealot has barely started dispatching.
+    const lines = new Array(count).fill(0);
+    const shippedLines = new Array(count).fill(0);
 
     for (const s of sales) {
       // Same exclusion as buildRows — the chart and the table must agree,
@@ -382,11 +387,13 @@ export function buildSeries(sales, now = Date.now(), costsBySku = new Map(), cos
       if (offset < 0) continue;
       const i = Math.min(count - 1, Math.floor(offset / sizeMs));
       value[i] += s._value;
+      lines[i] += 1;
 
       // Profit is shipped units only, at fees actually charged — the same
       // rule the Gross Profit column follows.
       if (orderStatusKey(s.status) === "shipped") {
         shipped[i] += s._value;
+        shippedLines[i] += 1;
         profit[i] += s._value - s._fees - landedCost(costsBySku, costHistory, s);
       }
     }
@@ -396,6 +403,8 @@ export function buildSeries(sales, now = Date.now(), costsBySku = new Map(), cos
       profit: profit.map((v) => Math.round(v)),
       // Guarded: an hour with nothing shipped divides by zero.
       margin: profit.map((v, i) => (shipped[i] > 0 ? Math.round((v / shipped[i]) * 1000) / 10 : 0)),
+      lines,
+      shippedLines,
     };
   };
 
@@ -435,6 +444,8 @@ export function buildSeries(sales, now = Date.now(), costsBySku = new Map(), cos
     month: month.value,
     profit: { today: today.profit, week: week.profit, month: month.profit },
     margin: { today: today.margin, week: week.margin, month: month.margin },
+    lines: { today: today.lines, week: week.lines, month: month.lines },
+    shippedLines: { today: today.shippedLines, week: week.shippedLines, month: month.shippedLines },
     elapsed: {
       today: startedBuckets(dayStart, 3600000, 24),
       week: startedBuckets(weekStart, 86400000, 7),
