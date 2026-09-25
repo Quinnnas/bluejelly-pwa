@@ -238,6 +238,43 @@ function buildSegments(rows, series, targets = {}) {
 
 const rand = (v) => "R\u00A0" + (Number.isFinite(v) ? v : 0).toLocaleString("en-US");
 
+// buildSegments returns a fixed three. A stored index is checked against
+// this, because the one genuinely dangerous failure here is reading
+// `segments[7].label` and blanking the whole app.
+const SEGMENT_COUNT = 3;
+
+// The chosen period has to outlive a reload. This is a PWA on a phone: it
+// gets backgrounded, evicted and relaunched constantly, and every relaunch
+// put the chart back on Today however many times the owner had set the
+// default to This month — both `seg` and `defaultPeriod` started at 0 and
+// nothing ever read the setting back.
+//
+// A per-viewer convenience, so localStorage is the right home. It is also
+// the least reliable one: the accessor itself throws in a private window
+// or with site data blocked, and what comes back is whatever was written
+// last, possibly by a build with a different number of tabs. Both are
+// handled, and a failure just means the period falls back to Today.
+const PERIOD_KEY = "bluejelly.defaultPeriod";
+
+function readStoredPeriod() {
+  try {
+    const raw = window.localStorage.getItem(PERIOD_KEY);
+    const n = Number(raw);
+    return raw !== null && Number.isInteger(n) && n >= 0 && n < SEGMENT_COUNT ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredPeriod(i) {
+  try {
+    window.localStorage.setItem(PERIOD_KEY, String(i));
+  } catch {
+    // Nothing worth telling the owner: the period still applies for this
+    // session, it just will not survive the next relaunch.
+  }
+}
+
 function relTime(ts, now) {
   const s = Math.max(0, Math.floor((now - ts) / 1000));
   if (s < 10) return "just now";
@@ -464,7 +501,11 @@ function heroBars(series, target, margins = [], W = 300, H = 92) {
 const H_CHART = 92;
 
 function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, currentEmail = USER_EMAIL, onUpdateName = () => {} }) {
-  const [seg, setSeg] = useState(0);
+  // Seeded from the stored default, not 0: the tab the app opens on IS the
+  // default period. Tapping a tab is a look at something else and stays
+  // transient — otherwise the last glance would silently become the
+  // setting, and Settings would sit there showing something untrue.
+  const [seg, setSeg] = useState(readStoredPeriod);
   const [open, setOpen] = useState(null);
   const [toast, setToast] = useState("");
   const [showTarget, setShowTarget] = useState(false);
@@ -476,7 +517,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [logoutConfirm, setLogoutConfirm] = useState(false);
   const [nameEditOpen, setNameEditOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState(currentName);
-  const [defaultPeriod, setDefaultPeriod] = useState(0);
+  const [defaultPeriod, setDefaultPeriod] = useState(readStoredPeriod);
   const [periodPickerOpen, setPeriodPickerOpen] = useState(false);
   const [targetsOpen, setTargetsOpen] = useState(false);
   // Drafts are strings so the field can be empty while being retyped; a
@@ -907,7 +948,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     }
   };
 
-  const active = segments[seg];
+  // Falls back rather than indexing off the end. `seg` is clamped on the
+  // way in, but this is the one read that blanks the entire screen if it
+  // ever comes back undefined.
+  const active = segments[seg] || segments[0];
   const row = active.row;
   // Both guarded: with real data a period can legitimately have no sales
   // (and a target can be unset), which used to render "R NaN" / "NaN%".
@@ -1553,13 +1597,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "15px 16px" }}>
                             <span style={{ fontSize: 15.5, color: "#fff", fontWeight: 500 }}>{r.label}</span>
                             <button onClick={() => setPeriodPickerOpen((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
-                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600 }}>{segments[defaultPeriod].label}</span>
+                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600 }}>{(segments[defaultPeriod] || segments[0]).label}</span>
                               <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: periodPickerOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
                             </button>
                           </div>
                           <div style={{ maxHeight: periodPickerOpen ? 180 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
                             {segments.map((s, si) => (
-                              <button key={s.key} onClick={() => { setDefaultPeriod(si); setSeg(si); setPeriodPickerOpen(false); flash("Default period: " + s.label); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "13px 16px 13px 28px", border: "none", borderTop: "1px solid " + PANEL_HAIR, background: si === defaultPeriod ? "rgba(255,255,255,0.05)" : "transparent", cursor: "pointer", fontFamily: FONT }}>
+                              <button key={s.key} onClick={() => { setDefaultPeriod(si); setSeg(si); writeStoredPeriod(si); setPeriodPickerOpen(false); flash("Default period: " + s.label); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "13px 16px 13px 28px", border: "none", borderTop: "1px solid " + PANEL_HAIR, background: si === defaultPeriod ? "rgba(255,255,255,0.05)" : "transparent", cursor: "pointer", fontFamily: FONT }}>
                                 <span style={{ fontSize: 14.5, color: si === defaultPeriod ? "#fff" : "rgba(255,255,255,0.6)", fontWeight: si === defaultPeriod ? 600 : 500 }}>{s.label}</span>
                                 {si === defaultPeriod && <Check size={17} color={WA} strokeWidth={3} />}
                               </button>
