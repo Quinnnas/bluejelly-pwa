@@ -605,6 +605,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   };
 
   const saveTargets = async () => {
+    // The editor is hidden from viewers, but the handler checks too: RLS is
+    // the real guard, and this keeps the message honest if it is ever
+    // reachable another way.
+    if (!isOwner) { flash("Only the owner can change targets"); return; }
     const rows = [];
     for (const f of TARGET_FIELDS) {
       // Strip spaces and separators people type into a rands field.
@@ -1379,10 +1383,23 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                         <div key={r.label} style={{ borderTop: topBorder }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "15px 16px" }}>
                             <span style={{ fontSize: 15.5, color: "#fff", fontWeight: 500 }}>{r.label}</span>
-                            <button onClick={openTargets} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
-                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600, ...NUM }}>{rand(D.targets.today ?? TARGET_FALLBACK.today)}/day</span>
-                              <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: targetsOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
-                            </button>
+                            {/* Viewers see the targets but cannot open the
+                                editor. RLS already refuses their write, so
+                                without this they would type a new figure,
+                                press Save and get a database error — the
+                                rule enforced as a failure rather than as a
+                                closed door. Same treatment as Automations. */}
+                            {isOwner ? (
+                              <button onClick={openTargets} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
+                                <span style={{ fontSize: 14.5, color: WA, fontWeight: 600, ...NUM }}>{rand(D.targets.today ?? TARGET_FALLBACK.today)}/day</span>
+                                <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: targetsOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
+                              </button>
+                            ) : (
+                              <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                <span style={{ fontSize: 14.5, color: "rgba(255,255,255,0.55)", fontWeight: 600, ...NUM }}>{rand(D.targets.today ?? TARGET_FALLBACK.today)}/day</span>
+                                <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.4px", color: "rgba(255,255,255,0.35)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, padding: "2px 6px" }}>OWNER</span>
+                              </span>
+                            )}
                           </div>
                           <div style={{ maxHeight: targetsOpen ? 260 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
                             {TARGET_FIELDS.map((f) => (
