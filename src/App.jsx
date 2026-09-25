@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { supabase } from "./lib/supabaseClient";
 import { loadStoreData, buildReportDefs } from "./lib/data";
 import { isQualityReturn } from "./lib/aggregate";
@@ -497,6 +497,41 @@ function heroBars(series, target, margins = [], W = 300, H = 92) {
   };
 }
 
+// A collapsing panel that measures its own content.
+//
+// This was a hard-coded max-height, raised by hand each time something was
+// found cut off. That is a fix with an expiry date: the same block is
+// taller on a narrow phone, where the explanatory paragraph wraps to more
+// lines, and taller again when a number gains a digit. Worse, it fails
+// silently — the content is in the DOM the whole time, just invisible
+// below the cap, so nothing throws and no test can see it.
+//
+// Measuring the content is the only version that cannot drift.
+function Collapse({ open, children, duration = "0.3s" }) {
+  const inner = useRef(null);
+  const [height, setHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = inner.current;
+    if (!el) return undefined;
+    const measure = () => setHeight(el.scrollHeight);
+    measure();
+    // The content also reflows without React re-rendering: web fonts land
+    // after first paint, the phone rotates, and the 5-minute refresh can
+    // change a number's width enough to rewrap a line.
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [children]);
+
+  return (
+    <div style={{ maxHeight: open ? height : 0, overflow: "hidden", transition: `max-height ${duration} ease` }}>
+      <div ref={inner}>{children}</div>
+    </div>
+  );
+}
+
 // The hero chart's viewBox height, shared by the SVG and its hit areas.
 const H_CHART = 92;
 
@@ -817,6 +852,14 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     const t = setTimeout(() => setBarTap(null), 3000);
     return () => clearTimeout(t);
   }, [barTap]);
+  // The target label clears itself on the same three seconds, for the same
+  // reason: it sits over the chart. Tapping the line again still dismisses
+  // it immediately, because the handler toggles.
+  useEffect(() => {
+    if (!showTarget) return undefined;
+    const t = setTimeout(() => setShowTarget(false), 3000);
+    return () => clearTimeout(t);
+  }, [showTarget]);
   useEffect(() => { setReturnLimit(RETURNS_PAGE); }, [returnsTab]);
   const [feesVat, setFeesVat] = useState(true);
   const [profitVat, setProfitVat] = useState(true);
@@ -1262,10 +1305,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                     <ChevronRight size={17} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ justifySelf: "end", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
                   </button>
                   {/* What sold -> what actually reaches the bank. */}
-                  {/* Rows carrying a companion period are taller. A single
-                      fixed max-height silently clipped that block off the
-                      bottom — the content was in the DOM but invisible. */}
-                  <div style={{ maxHeight: isOpen ? (r.companion ? 560 : 380) : 0, overflow: "hidden", transition: "max-height 0.3s ease" }}>
+                  {/* Height is measured, not guessed: rows carrying a
+                      companion period are taller, and the note at the
+                      bottom wraps to more lines on a narrow phone. */}
+                  <Collapse open={isOpen}>
                     <div style={{ margin: "0 18px 12px", padding: "13px 14px", background: "rgba(255,255,255,0.05)", border: "1px solid " + PANEL_HAIR, borderRadius: 11, fontSize: 13.5 }}>
                       {/* The table now shows Prep and Ship as separate
                           groups, so the total only appears here. */}
@@ -1348,7 +1391,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                         </div>
                       )}
                     </div>
-                  </div>
+                  </Collapse>
                 </div>
               );
             })}
