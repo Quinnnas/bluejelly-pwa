@@ -422,17 +422,29 @@ function heroBars(series, target, margins = [], W = 300, H = 92) {
   });
 
   // The margin line rides on its OWN scale, not the rand one — a
-  // percentage and a rand value share no axis. Scaled to the best margin
-  // in the period so the shape is readable; the tap readout gives the
-  // actual number, which is what the line cannot.
-  const marginMax = Math.max(...margins.map((m) => Math.abs(m)), 1) * 1.25;
-  const marginY = (m) => padT + (1 - m / marginMax) * (floorY - padT);
+  // percentage and a rand value share no axis.
+  //
+  // The scale spans the actual range INCLUDING negatives. It used to run
+  // 0 to the best margin, so a loss-making hour plotted below the floor
+  // and the line simply left the bottom of the chart: an hour at -31%
+  // landed 54px under a 92px canvas. A margin can be negative — one
+  // below-cost clearance sale as the only dispatch in an hour does it —
+  // and the chart has to be able to draw that.
+  const marginVals = bars
+    .map((_, i) => margins[i])
+    .filter((m) => typeof m === "number" && Number.isFinite(m) && m !== 0);
+  const loM = Math.min(0, ...marginVals);
+  const hiM = Math.max(0, ...marginVals);
+  const spanM = (hiM - loM) || 1;
+  const topM = hiM + spanM * 0.12;
+  const botM = loM - spanM * 0.12;
+  const marginY = (m) => padT + (1 - (m - botM) / (topM - botM)) * (floorY - padT);
   const points = bars
     .map((bar, i) => ({ bar, m: margins[i] }))
     // Only buckets that actually shipped something have a margin. Drawing
     // a 0% for the rest would slam the line to the floor overnight and
     // read as a collapse in profitability rather than as no dispatches.
-    .filter((pt) => pt.m !== undefined && pt.m !== 0)
+    .filter((pt) => typeof pt.m === "number" && Number.isFinite(pt.m) && pt.m !== 0)
     .map((pt) => `${pt.bar.x + pt.bar.w / 2},${marginY(pt.m)}`);
 
   return {
@@ -440,7 +452,9 @@ function heroBars(series, target, margins = [], W = 300, H = 92) {
     targetY: yFor(pace),
     pace: Math.round(pace),
     marginPath: points.length > 1 ? `M ${points.join(" L ")}` : null,
-    marginMax: Math.round(marginMax * 10) / 10,
+    // Only drawn when something actually went negative, so the usual
+    // profitable day is not cluttered with a line meaning nothing.
+    marginZeroY: loM < 0 ? marginY(0) : null,
   };
 }
 
@@ -1047,6 +1061,14 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <rect key={bar.i} x={bar.x} y={bar.y} width={bar.w} height={bar.h} rx="1"
                       fill={barTap === bar.i ? "#fff" : "rgba(255,255,255,0.55)"} />
               ))}
+              {/* Where margin crosses into a loss. Only present when some
+                  bucket went negative — otherwise it is a line that says
+                  nothing on an ordinary day. */}
+              {sp.marginZeroY !== null && sp.marginZeroY !== undefined && (
+                <line x1="0" y1={sp.marginZeroY} x2="300" y2={sp.marginZeroY}
+                      stroke="#4C8DFF" strokeWidth="1" strokeDasharray="2 4"
+                      vectorEffect="non-scaling-stroke" opacity="0.4" />
+              )}
               {/* Margin, on its own scale. Thin and blue so it reads as a
                   second series rather than competing with the bars. */}
               {sp.marginPath && (
