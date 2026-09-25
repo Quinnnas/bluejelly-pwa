@@ -266,12 +266,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Use POST." });
   }
 
-  // ANTHROPIC_API_KEY is the name to use. `AskTim` is an alias for the
-  // variable as it was actually created in Vercel — an API key in a
-  // variable named after the feature reads as configuration to the next
-  // person, not as a secret, so rename it when convenient and this line
-  // can go.
-  const key = process.env.ANTHROPIC_API_KEY || process.env.AskTim;
+  const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
     // "It's missing" is not much help when the variable has been set but
     // is not arriving. Report which Anthropic-ish NAMES the function can
@@ -286,12 +281,6 @@ export default async function handler(req, res) {
     // no project variables are reaching it at all, which means the key was
     // added to a different Vercel project than the one serving this domain.
     const projectVarsVisible = names.filter((k) => /^VITE_SUPABASE/.test(k)).sort();
-    // Last resort: list the project-level variable NAMES this function can
-    // see, with Vercel's own system variables filtered out. Names only,
-    // never values. A misspelling ("ANTROPIC_API_KEY") or a different name
-    // entirely is invisible to the /anthropic/ match above, and three
-    // rounds of "check it again" is worse than briefly listing them.
-    // Remove once the key is in place.
     return res.status(503).json({
       error: "Tim isn't configured yet — ANTHROPIC_API_KEY is missing from the server's environment variables.",
       diagnostic: seen.length
