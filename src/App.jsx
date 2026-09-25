@@ -467,6 +467,12 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   // number state would snap a half-deleted "3500" back to 3500.
   const [targetDraft, setTargetDraft] = useState({});
   const [targetSaving, setTargetSaving] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNext, setPwNext] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwErr, setPwErr] = useState("");
   const [notifOpen, setNotifOpen] = useState(false);
   const [readIds, setReadIds] = useState([]);
   const [autoOpen, setAutoOpen] = useState(false);
@@ -584,6 +590,38 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [timFiles, setTimFiles] = useState([]);
   const timScrollRef = React.useRef(null);
   const timFileRef = React.useRef(null);
+
+  const closePw = () => {
+    setPwOpen(false);
+    setPwCurrent(""); setPwNext(""); setPwConfirm(""); setPwErr("");
+  };
+
+  const changePassword = async () => {
+    setPwErr("");
+    if (!pwCurrent) return setPwErr("Enter your current password.");
+    if (pwNext.length < 8) return setPwErr("New password needs at least 8 characters.");
+    if (pwNext !== pwConfirm) return setPwErr("New passwords do not match.");
+    if (pwNext === pwCurrent) return setPwErr("That is the password you already have.");
+
+    setPwBusy(true);
+    // Supabase's updateUser does NOT ask for the old password, so anyone
+    // holding an unlocked phone could change it and lock the owner out.
+    // Re-authenticating first is what makes this a password change rather
+    // than a password takeover.
+    const { error: authErr } = await supabase.auth.signInWithPassword({
+      email: currentEmail, password: pwCurrent,
+    });
+    if (authErr) {
+      setPwBusy(false);
+      return setPwErr(/Invalid login/i.test(authErr.message) ? "That current password is wrong." : authErr.message);
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: pwNext });
+    setPwBusy(false);
+    if (error) return setPwErr(error.message);
+    closePw();
+    flash("Password changed");
+  };
 
   // The three periods the dashboard tracks, and the `targets` rows behind
   // them. Keys match the table's `period` column, not the segment keys.
@@ -797,6 +835,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     ]},
     { title: "Account settings", rows: [
       { type: "editName", label: "Name" },
+      { type: "password", label: "Password" },
       { type: "nav", label: "Email", value: currentEmail },
       { type: "nav", label: "Store", value: STORE },
       { type: "logout", label: "Log out" },
@@ -1378,6 +1417,49 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 18, overflow: "hidden" }}>
                   {g.rows.map((r, ri) => {
                     const topBorder = ri === 0 ? "none" : "1px solid " + PANEL_HAIR;
+                    if (r.type === "password") {
+                      return (
+                        <div key={r.label} style={{ borderTop: topBorder }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "15px 16px" }}>
+                            <span style={{ fontSize: 15.5, color: "#fff", fontWeight: 500 }}>{r.label}</span>
+                            <button onClick={() => (pwOpen ? closePw() : setPwOpen(true))} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer" }}>
+                              <span style={{ fontSize: 14.5, color: WA, fontWeight: 600 }}>Change</span>
+                              <ChevronRight size={18} color="rgba(255,255,255,0.32)" strokeWidth={2.4} style={{ transform: pwOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
+                            </button>
+                          </div>
+                          <div style={{ maxHeight: pwOpen ? 320 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
+                            {[
+                              { label: "Current password", value: pwCurrent, set: setPwCurrent, auto: "current-password" },
+                              { label: "New password", value: pwNext, set: setPwNext, auto: "new-password" },
+                              { label: "Confirm new password", value: pwConfirm, set: setPwConfirm, auto: "new-password" },
+                            ].map((f) => (
+                              <div key={f.label} style={{ padding: "11px 16px 0 28px" }}>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.5)", display: "block", marginBottom: 6 }}>{f.label}</label>
+                                <input
+                                  type="password"
+                                  autoComplete={f.auto}
+                                  value={f.value}
+                                  onChange={(e) => f.set(e.target.value)}
+                                  placeholder="••••••••"
+                                  style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid " + PANEL_BORDER, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14.5, fontFamily: FONT, outline: "none", boxSizing: "border-box" }}
+                                />
+                              </div>
+                            ))}
+                            {pwErr && (
+                              <div style={{ color: "#F87171", fontSize: 12.5, padding: "10px 16px 0 28px", lineHeight: 1.45 }}>{pwErr}</div>
+                            )}
+                            <div style={{ display: "flex", gap: 9, padding: "12px 16px 14px 28px" }}>
+                              <button onClick={changePassword} disabled={pwBusy} style={{ flex: 1, padding: "11px 0", borderRadius: 11, border: "none", background: pwBusy ? "rgba(255,255,255,0.12)" : WA, color: pwBusy ? "rgba(255,255,255,0.5)" : "#0C0F14", fontSize: 14.5, fontWeight: 700, cursor: pwBusy ? "default" : "pointer", fontFamily: FONT }}>
+                                {pwBusy ? "Changing…" : "Change password"}
+                              </button>
+                              <button onClick={closePw} style={{ padding: "11px 16px", borderRadius: 11, border: "1px solid " + PANEL_BORDER, background: "transparent", color: "rgba(255,255,255,0.7)", fontSize: 14.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
                     if (r.type === "targets") {
                       return (
                         <div key={r.label} style={{ borderTop: topBorder }}>
@@ -2840,8 +2922,21 @@ function SalesOpsCard({ rec, onDecide, decided }) {
   );
 }
 
-function AuthGate({ onComplete }) {
-  const [mode, setMode] = useState("signin"); // signin | signup | apikey
+/**
+ * True when the browser is holding a password-recovery link.
+ *
+ * Supabase puts `type=recovery` in the URL fragment and, crucially, signs
+ * the user IN with a temporary session. Without this check the normal
+ * session bootstrap would see that session and drop them straight onto the
+ * dashboard — link used up, password never changed.
+ */
+export function isRecoveryLink(hash = window.location.hash) {
+  return /[#&]type=recovery(&|$)/.test(hash || "");
+}
+
+function AuthGate({ onComplete, startMode = "signin" }) {
+  // signin | signup | apikey | forgot | reset
+  const [mode, setMode] = useState(startMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -2948,6 +3043,50 @@ function AuthGate({ onComplete }) {
     setTimeout(() => { setBusy(false); onComplete(apiKey.trim(), email.trim().toLowerCase(), name.trim(), "viewer"); }, 500);
   };
 
+  const doForgot = () => {
+    setErr("");
+    const clean = email.trim().toLowerCase();
+    if (!validEmail(clean)) return setErr("Enter a valid email address.");
+    setBusy(true);
+    // redirectTo must be listed under Auth -> URL Configuration -> Redirect
+    // URLs in Supabase, or the link in the email bounces to the site root
+    // without the recovery fragment and nothing happens.
+    supabase.auth
+      .resetPasswordForEmail(clean, { redirectTo: window.location.origin })
+      .then(({ error }) => {
+        setBusy(false);
+        // Deliberately the same message whether or not the address exists:
+        // a different one would let anyone test which emails have accounts.
+        if (error && !/rate/i.test(error.message)) return setErr(error.message);
+        if (error) return setErr("Too many attempts just now — wait a minute and try again.");
+        setMode("sent");
+      });
+  };
+
+  const doReset = () => {
+    setErr("");
+    if (pw.length < 8) return setErr("Use at least 8 characters.");
+    if (pw !== pw2) return setErr("Passwords do not match.");
+    setBusy(true);
+    supabase.auth.updateUser({ password: pw }).then(async ({ error }) => {
+      if (error) { setBusy(false); return setErr(error.message); }
+      // Drop the recovery fragment so a refresh does not reopen this screen.
+      window.history.replaceState(null, "", window.location.pathname);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { setBusy(false); setMode("signin"); return setErr("Password changed — sign in with it."); }
+      let { data: profile } = await supabase.from("profiles").select("name, email, role").eq("id", session.user.id).single();
+      if (!profile) {
+        const { data: created } = await supabase.from("profiles")
+          .insert({ id: session.user.id, email: session.user.email, name: nameFromEmail(session.user.email) })
+          .select("name, email, role").single();
+        profile = created;
+      }
+      setBusy(false);
+      if (!profile) { setMode("signin"); return setErr("Password changed — sign in with it."); }
+      onComplete("", profile.email, profile.name || nameFromEmail(profile.email), profile.role);
+    });
+  };
+
   const primaryBtn = (label, onClick) => (
     <button onClick={onClick} disabled={busy} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 15, marginTop: 20, borderRadius: 14, border: "none", background: WA, color: "#fff", fontSize: 15.5, fontWeight: 700, fontFamily: FONT, cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1, boxShadow: "0 6px 20px rgba(37,211,102,0.28)" }}>
       {busy ? <RefreshCw size={18} strokeWidth={2.6} style={{ animation: "spin 0.85s linear infinite" }} /> : <>{label} <ArrowRight size={18} strokeWidth={2.6} /></>}
@@ -3010,9 +3149,19 @@ function AuthGate({ onComplete }) {
             </>
           ) : (
             <>
-              <div style={{ fontSize: 20, fontWeight: 700, color: "#fff" }}>{mode === "signin" ? "Welcome back" : "Create your account"}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#fff" }}>{
+                mode === "signin" ? "Welcome back"
+                : mode === "signup" ? "Create your account"
+                : mode === "forgot" ? "Reset your password"
+                : mode === "sent" ? "Check your email"
+                : "Choose a new password"
+              }</div>
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.55)", marginTop: 6, lineHeight: 1.5 }}>
-                {mode === "signin" ? "Sign in to your seller dashboard." : "Access is approved by email — sign up with your approved address."}
+                {mode === "signin" ? "Sign in to your seller dashboard."
+                : mode === "signup" ? "Access is approved by email — sign up with your approved address."
+                : mode === "forgot" ? "We'll email you a link to set a new one."
+                : mode === "sent" ? "If that address has an account, a reset link is on its way. The link expires in an hour."
+                : "Pick something only you know — this replaces your old password."}
               </div>
 
               {mode === "signup" && (
@@ -3022,22 +3171,36 @@ function AuthGate({ onComplete }) {
                 </div>
               )}
 
-              <div style={{ marginTop: mode === "signup" ? 16 : 22 }}>
-                <label style={authLabel}>Email address</label>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="you@store.co.za" style={authInput} />
-              </div>
+              {mode !== "reset" && mode !== "sent" && (
+                <div style={{ marginTop: mode === "signup" ? 16 : 22 }}>
+                  <label style={authLabel}>Email address</label>
+                  <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="you@store.co.za" style={authInput} />
+                </div>
+              )}
 
-              <div style={{ marginTop: 16 }}>
-                <label style={authLabel}>Password</label>
-                <div style={{ position: "relative" }}>
-                  <input value={pw} onChange={(e) => setPw(e.target.value)} type={showPw ? "text" : "password"} placeholder="••••••••" style={{ ...authInput, paddingRight: 44 }} />
-                  <button onClick={() => setShowPw((v) => !v)} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", cursor: "pointer", padding: 6 }}>
-                    {showPw ? <EyeOff size={18} color="rgba(255,255,255,0.5)" /> : <Eye size={18} color="rgba(255,255,255,0.5)" />}
+              {mode !== "forgot" && mode !== "sent" && (
+                <div style={{ marginTop: mode === "reset" ? 22 : 16 }}>
+                  <label style={authLabel}>{mode === "reset" ? "New password" : "Password"}</label>
+                  <div style={{ position: "relative" }}>
+                    <input value={pw} onChange={(e) => setPw(e.target.value)} type={showPw ? "text" : "password"} placeholder="••••••••" style={{ ...authInput, paddingRight: 44 }} />
+                    <button onClick={() => setShowPw((v) => !v)} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", cursor: "pointer", padding: 6 }}>
+                      {showPw ? <EyeOff size={18} color="rgba(255,255,255,0.5)" /> : <Eye size={18} color="rgba(255,255,255,0.5)" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* The "forgot password?" link lives under the password box,
+                  which is where someone looks the moment theirs fails. */}
+              {mode === "signin" && (
+                <div style={{ textAlign: "right", marginTop: 9 }}>
+                  <button onClick={() => { setErr(""); setPw(""); setMode("forgot"); }} style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: FONT, padding: 0 }}>
+                    Forgot password?
                   </button>
                 </div>
-              </div>
+              )}
 
-              {mode === "signup" && (
+              {(mode === "signup" || mode === "reset") && (
                 <div style={{ marginTop: 16 }}>
                   <label style={authLabel}>Confirm password</label>
                   <input value={pw2} onChange={(e) => setPw2(e.target.value)} type={showPw ? "text" : "password"} placeholder="••••••••" style={authInput} />
@@ -3045,13 +3208,30 @@ function AuthGate({ onComplete }) {
               )}
 
               {err && <div style={{ color: "#F87171", fontSize: 13, marginTop: 14 }}>{err}</div>}
-              {primaryBtn(mode === "signin" ? "Sign in" : "Create account", mode === "signin" ? doSignin : doSignup)}
+              {mode !== "sent" && primaryBtn(
+                mode === "signin" ? "Sign in"
+                : mode === "signup" ? "Create account"
+                : mode === "forgot" ? "Email me a link"
+                : "Set new password",
+                mode === "signin" ? doSignin
+                : mode === "signup" ? doSignup
+                : mode === "forgot" ? doForgot
+                : doReset
+              )}
 
               <div style={{ textAlign: "center", marginTop: 18, fontSize: 13.5, color: "rgba(255,255,255,0.5)" }}>
-                {mode === "signin" ? "New here? " : "Already have access? "}
-                <button onClick={() => { setErr(""); setMode(mode === "signin" ? "signup" : "signin"); }} style={{ background: "transparent", border: "none", color: WA, fontWeight: 700, cursor: "pointer", fontFamily: FONT, fontSize: 13.5 }}>
-                  {mode === "signin" ? "Create an account" : "Sign in"}
-                </button>
+                {mode === "forgot" || mode === "sent" || mode === "reset" ? (
+                  <button onClick={() => { setErr(""); setPw(""); setPw2(""); setMode("signin"); }} style={{ background: "transparent", border: "none", color: WA, fontWeight: 700, cursor: "pointer", fontFamily: FONT, fontSize: 13.5 }}>
+                    Back to sign in
+                  </button>
+                ) : (
+                  <>
+                    {mode === "signin" ? "New here? " : "Already have access? "}
+                    <button onClick={() => { setErr(""); setMode(mode === "signin" ? "signup" : "signin"); }} style={{ background: "transparent", border: "none", color: WA, fontWeight: 700, cursor: "pointer", fontFamily: FONT, fontSize: 13.5 }}>
+                      {mode === "signin" ? "Create an account" : "Sign in"}
+                    </button>
+                  </>
+                )}
               </div>
             </>
           )}
@@ -3079,6 +3259,10 @@ export default function App() {
   // to the login screen every time.
   useEffect(() => {
     let cancelled = false;
+    // A recovery link arrives WITH a valid session attached. Letting the
+    // bootstrap act on it would drop the user on the dashboard with their
+    // old password intact and the link already spent.
+    if (isRecoveryLink()) { setChecking(false); return () => { cancelled = true; }; }
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) { if (!cancelled) setChecking(false); return; }
       const { data: profile } = await supabase.from("profiles").select("name, email, role").eq("id", session.user.id).single();
@@ -3105,7 +3289,7 @@ export default function App() {
 
   if (!authed) {
     return (
-      <AuthGate onComplete={(key, email, name, role) => {
+      <AuthGate startMode={isRecoveryLink() ? "reset" : "signin"} onComplete={(key, email, name, role) => {
         setApiKey(key);
         setSignedInEmail(email || "");
         setSignedInName(name || "");
