@@ -124,6 +124,30 @@ export function breakEvenPrice({ productCost = 0, dcShipping = 0, otherCosts = 0
 }
 
 /**
+ * The lowest price that still clears a given profit per unit.
+ *
+ * Same solve as break-even with the wanted profit added to the costs:
+ *
+ *     price = (profit + costs + fulfilment) / (1 - successRate·(1 + VAT))
+ *
+ * Rounded UP to a whole rand, because the exact answer is a price nobody
+ * lists — R238.06 for a R10 floor on a R160 landed cost — and rounding
+ * down would quietly miss the floor by cents. R239 clears it with R10.82;
+ * R238 comes in at R9.94. Whole rands also match how prices are actually
+ * set in the portal.
+ */
+export function minPriceForProfit(minProfit = 0, costs = {}) {
+  const total =
+    Math.max(0, num(costs.productCost)) +
+    Math.max(0, num(costs.dcShipping)) +
+    Math.max(0, num(costs.otherCosts));
+  const fulfilment = inclVat(FULFILMENT_FEE_EXCL);
+  const retained = 1 - SUCCESS_FEE_RATE * (1 + VAT_RATE);
+  if (retained <= 0) return 0;
+  return Math.ceil((Math.max(0, num(minProfit)) + total + fulfilment) / retained);
+}
+
+/**
  * The price needed to clear a given margin, for "what should I charge?".
  *
  * Same solve with the target margin moved to the left:

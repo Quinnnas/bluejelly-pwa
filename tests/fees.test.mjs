@@ -14,6 +14,7 @@ import {
   estimateVapeFees,
   breakEvenPrice,
   priceForMargin,
+  minPriceForProfit,
   inclVat,
   exclVat,
   SUCCESS_FEE_RATE,
@@ -174,6 +175,55 @@ check("an unreachable margin returns null, not a vast number", () => {
 check("a reachable margin just under the ceiling still works", () => {
   assert.ok(priceForMargin(80, { productCost: 158 }) > 0);
 });
+
+console.log("\n=== the price band (owner's worked example) ===");
+
+// Quintin's own example: R158 cost, R2 shipping, a R10 profit floor.
+// Min comes out at R239 earning R10.82, Max at the R269 he was
+// considering earning R37.02.
+const band = { productCost: 158, dcShipping: 2 };
+
+check("a R10 floor gives a R239 minimum price", () =>
+  assert.equal(minPriceForProfit(10, band), 239)
+);
+check("...earning R10.82 there", () =>
+  assert.equal(estimateVapeFees({ sellingPrice: 239, ...band }).netProfit, 10.82)
+);
+check("...and one rand lower misses the floor", () =>
+  assert.ok(estimateVapeFees({ sellingPrice: 238, ...band }).netProfit < 10)
+);
+check("the top of the band is just the entered price", () =>
+  assert.equal(estimateVapeFees({ sellingPrice: 269, ...band }).netProfit, 37.02)
+);
+
+// Rounding UP is the whole point: rounding down would sit under the
+// floor by cents while claiming to clear it.
+check("the minimum price always clears the floor, never misses by cents", () => {
+  for (const floor of [0, 1, 5, 10, 25, 50, 100]) {
+    for (const cost of [0, 50, 158, 420]) {
+      const costs = { productCost: cost, dcShipping: 2 };
+      const p = minPriceForProfit(floor, costs);
+      const got = estimateVapeFees({ sellingPrice: p, ...costs }).netProfit;
+      assert.ok(got >= floor, `floor ${floor}, cost ${cost}: price ${p} earns ${got}`);
+      assert.equal(p, Math.round(p), `price ${p} is not a whole rand`);
+    }
+  }
+});
+check("a zero floor is break-even rounded up to a whole rand", () => {
+  const p = minPriceForProfit(0, band);
+  assert.equal(p, Math.ceil(breakEvenPrice(band)));
+  assert.ok(estimateVapeFees({ sellingPrice: p, ...band }).netProfit >= 0);
+});
+check("no costs and no floor still covers the flat fulfilment fee", () =>
+  assert.ok(minPriceForProfit(0, {}) >= 37.95)
+);
+check("a blank floor is treated as zero, not NaN", () => {
+  const p = minPriceForProfit("", band);
+  assert.ok(Number.isFinite(p) && p > 0, `got ${p}`);
+});
+check("a negative floor is floored at zero", () =>
+  assert.equal(minPriceForProfit(-50, band), minPriceForProfit(0, band))
+);
 
 console.log(
   failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`

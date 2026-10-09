@@ -6,6 +6,7 @@ import {
   estimateVapeFees,
   breakEvenPrice,
   priceForMargin,
+  minPriceForProfit,
   exclVat,
   SUCCESS_FEE_RATE,
   FULFILMENT_FEE_EXCL,
@@ -693,6 +694,9 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [calcCost, setCalcCost] = useState("");
   const [calcShip, setCalcShip] = useState("");
   const [calcOther, setCalcOther] = useState("");
+  // The least profit per unit worth taking. Blank means break-even, which
+  // is a real answer rather than an invented default.
+  const [calcMinProfit, setCalcMinProfit] = useState("");
   const [calcVat, setCalcVat] = useState(true);
   const [timOpen, setTimOpen] = useState(false);
   const [timLog, setTimLog] = useState([]);
@@ -1045,6 +1049,20 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const calcTarget15 = useMemo(
     () => priceForMargin(15, calcCosts),
     [calcCost, calcShip, calcOther]
+  );
+  // The floor price for the chosen profit, and what that price actually
+  // earns — which is a little over the floor, because the price is a
+  // whole rand rather than the exact solve.
+  const calcMinPrice = useMemo(
+    () => minPriceForProfit(calcMinProfit, calcCosts),
+    [calcMinProfit, calcCost, calcShip, calcOther]
+  );
+  const calcAtMin = useMemo(
+    () => estimateVapeFees({
+      sellingPrice: calcMinPrice, productCost: calcCost,
+      dcShipping: calcShip, otherCosts: calcOther,
+    }),
+    [calcMinPrice, calcCost, calcShip, calcOther]
   );
 
   const active = segments[seg] || segments[0];
@@ -1854,8 +1872,8 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Calculator</div>
               <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 1 }}>Takealot fees on a vape</div>
             </div>
-            {(calcPrice || calcCost || calcShip || calcOther) && (
-              <button onClick={() => { setCalcPrice(""); setCalcCost(""); setCalcShip(""); setCalcOther(""); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Reset</button>
+            {(calcPrice || calcCost || calcShip || calcOther || calcMinProfit) && (
+              <button onClick={() => { setCalcPrice(""); setCalcCost(""); setCalcShip(""); setCalcOther(""); setCalcMinProfit(""); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Reset</button>
             )}
           </div>
 
@@ -1866,6 +1884,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 { label: "Cost of product", hint: "incl VAT, as the spreadsheet keeps it", value: calcCost, set: setCalcCost },
                 { label: "Cost to ship to Takealot DC", hint: "per unit — leave blank for lead time", value: calcShip, set: setCalcShip },
                 { label: "Other costs", hint: "optional", value: calcOther, set: setCalcOther },
+                { label: "Minimum profit per unit", hint: "the least you will accept — blank means break-even", value: calcMinProfit, set: setCalcMinProfit },
               ].map((f, i) => (
                 <div key={f.label} style={{ marginTop: i === 0 ? 0 : 13 }}>
                   <div style={{ fontSize: 13, color: "rgba(255,255,255,0.78)", fontWeight: 600, marginBottom: 5 }}>{f.label}</div>
@@ -1941,6 +1960,52 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
             ) : (
               <div style={{ padding: "26px 16px 20px", textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.35)", lineHeight: 1.5 }}>
                 Enter a selling price to see what Takealot takes.
+              </div>
+            )}
+
+            {/* The price band: the floor for the profit the owner will
+                accept, and the price being considered. Shown whenever
+                there is a cost to work from, because the floor is useful
+                before a selling price has been picked — that is the
+                question it answers. */}
+            {calcResult.costs > 0 && (
+              <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: FAINT, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 9 }}>Price band</div>
+                <WaterfallRow label="Cost" value={rand(calcShown.productCost) + " incl"} dim />
+                {calcResult.dcShipping > 0 && <WaterfallRow label="Shipping" value={rand(calcShown.dcShipping)} dim />}
+                {calcResult.otherCosts > 0 && <WaterfallRow label="Other" value={rand(calcShown.otherCosts)} dim />}
+                <div style={{ height: 1, background: PANEL_HAIR, margin: "9px 0" }} />
+
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "3px 0" }}>
+                  <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>Min</span>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", ...NUM }}>
+                    {rand(calcVat ? calcMinPrice : exclVat(calcMinPrice))}
+                    <span style={{ color: calcAtMin.netProfit >= 0 ? POS : "#F87171", marginLeft: 8 }}>
+                      {rand(calcVat ? calcAtMin.netProfit : exclVat(calcAtMin.netProfit))}
+                    </span>
+                  </span>
+                </div>
+
+                {calcResult.price > 0 && (
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "3px 0" }}>
+                    <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>Max</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", ...NUM }}>
+                      {rand(calcShown.price)}
+                      <span style={{ color: calcResult.netProfit >= 0 ? POS : "#F87171", marginLeft: 8 }}>
+                        {rand(calcShown.netProfit)}
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                {/* Asking for a floor above the price being considered is
+                    not an error, it is the answer: this one does not pay. */}
+                {calcResult.price > 0 && calcResult.price < calcMinPrice && (
+                  <div style={{ marginTop: 9, fontSize: 11.5, color: "#F87171", lineHeight: 1.45 }}>
+                    {rand(calcShown.price)} is below the {rand(calcVat ? calcMinPrice : exclVat(calcMinPrice))} floor —
+                    it earns {rand(calcShown.netProfit)}, not {rand(calcVat ? Math.max(0, Number(calcMinProfit) || 0) : exclVat(Math.max(0, Number(calcMinProfit) || 0)))}.
+                  </div>
+                )}
               </div>
             )}
 
