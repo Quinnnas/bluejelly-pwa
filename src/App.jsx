@@ -2,10 +2,21 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "re
 import { supabase } from "./lib/supabaseClient";
 import { loadStoreData, buildReportDefs } from "./lib/data";
 import { isQualityReturn } from "./lib/aggregate";
+import {
+  estimateVapeFees,
+  breakEvenPrice,
+  priceForMargin,
+  exclVat,
+  SUCCESS_FEE_RATE,
+  FULFILMENT_FEE_EXCL,
+  VAT_RATE,
+  RATES_VERIFIED,
+} from "./lib/fees";
 import { askTim, timContext, TIM_SUGGESTIONS, messageText, messageAttachments } from "./lib/askTim";
 import { ACCEPT, MAX_FILES, MAX_TOTAL_BYTES, attachmentBytes, buildContent, prepareAttachment } from "./lib/timAttachments";
 import {
   Bell,
+  Calculator as CalculatorIcon,
   ChevronRight,
   ChevronLeft,
   Copy,
@@ -674,6 +685,15 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const RETURNS_PAGE = 100;
   const [returnLimit, setReturnLimit] = useState(RETURNS_PAGE);
   const [returnDetail, setReturnDetail] = useState(null);
+  const [calcOpen, setCalcOpen] = useState(false);
+  // Strings, not numbers: a number field has to be allowed to be empty
+  // while it is being retyped, and 0 is a legitimate value for the two
+  // cost fields. The maths coerces.
+  const [calcPrice, setCalcPrice] = useState("");
+  const [calcCost, setCalcCost] = useState("");
+  const [calcShip, setCalcShip] = useState("");
+  const [calcOther, setCalcOther] = useState("");
+  const [calcVat, setCalcVat] = useState(true);
   const [timOpen, setTimOpen] = useState(false);
   const [timLog, setTimLog] = useState([]);
   const [timInput, setTimInput] = useState("");
@@ -963,6 +983,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { label: "Buy Box Tracking", icon: Crosshair },
     { label: "Reports", icon: BarChart3, children: ["Stock Replenishment", "Weekly Report", "Monthly Report"] },
     { label: "Automations", icon: Zap },
+    { label: "Calculator", icon: CalculatorIcon },
     { label: "Ask Tim", icon: Sparkles },
     { label: "Settings", icon: Settings },
   ];
@@ -994,6 +1015,38 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   // Falls back rather than indexing off the end. `seg` is clamped on the
   // way in, but this is the one read that blanks the entire screen if it
   // ever comes back undefined.
+  // Fee estimator. Recomputed on every keystroke, which is cheap: it is
+  // arithmetic on four numbers, not a pass over 32,000 sales.
+  const calcResult = useMemo(
+    () => estimateVapeFees({
+      sellingPrice: calcPrice, productCost: calcCost,
+      dcShipping: calcShip, otherCosts: calcOther,
+    }),
+    [calcPrice, calcCost, calcShip, calcOther]
+  );
+  // The VAT toggle scales every money line uniformly, so the margin is
+  // identical either way — which is the point. Costs are taken as
+  // VAT-inclusive because that is how sku_costs stores them and how the
+  // spreadsheet is kept; scaling them too keeps the table internally
+  // consistent instead of mixing two VAT bases in one column.
+  const calcShown = useMemo(() => {
+    if (calcVat) return calcResult;
+    const out = {};
+    for (const [k, v] of Object.entries(calcResult)) {
+      out[k] = k === "netMargin" || k === "feeShare" ? v : exclVat(v);
+    }
+    return out;
+  }, [calcResult, calcVat]);
+  const calcCosts = { productCost: calcCost, dcShipping: calcShip, otherCosts: calcOther };
+  const calcBreakEven = useMemo(
+    () => breakEvenPrice(calcCosts),
+    [calcCost, calcShip, calcOther]
+  );
+  const calcTarget15 = useMemo(
+    () => priceForMargin(15, calcCosts),
+    [calcCost, calcShip, calcOther]
+  );
+
   const active = segments[seg] || segments[0];
   const row = active.row;
   // Both guarded: with real data a period can legitimately have no sales
@@ -1446,7 +1499,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 );
               }
               return (
-                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (m.label === "Returns") setReturnsOpen(true); else if (m.label === "Ask Tim") setTimOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
+                <button key={m.label} onClick={() => { setMenuOpen(false); if (m.label === "Settings") setSettingsOpen(true); else if (m.label === "Automations") setAutoOpen(true); else if (m.label === "Buy Box Tracking") flash("Available soon"); else if (m.label === "Sales Ops") setSalesOpsOpen(true); else if (m.label === "Orders") setOrdersOpen(true); else if (m.label === "Offers") setOffersOpen(true); else if (m.label === "Returns") setReturnsOpen(true); else if (m.label === "Calculator") setCalcOpen(true); else if (m.label === "Ask Tim") setTimOpen(true); else if (!active) flash(m.label); }} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "13px 14px", borderRadius: 13, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 15.5, fontWeight: active ? 600 : 500, background: active ? "rgba(255,255,255,0.09)" : "transparent", color: active ? "#fff" : "rgba(255,255,255,0.66)" }}>
                   <Icon size={20} strokeWidth={2} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
                   {m.label}
                   {m.label === "Sales Ops" && salesOpsPending > 0 && (
@@ -1784,6 +1837,125 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
         </div>
 
 
+
+        {/* Calculator — the portal's Fee Estimator, for vapes only.
+            Vapes only is a deliberate limit, not a shortcut. The
+            fulfilment fee is a parcel-size tier: the same query that
+            gives R37.95 for every vape gives R69.00 for the heaters and
+            R51.75 for the gas cylinders. This screen does not ask for
+            dimensions, so it answers only for the category it has 25,681
+            charged lines of evidence about, and says so on the face. */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: calcOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 16px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            <button onClick={() => setCalcOpen(false)} style={{ width: 38, height: 38, borderRadius: 19, background: "rgba(255,255,255,0.07)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <ChevronLeft size={20} color="#fff" strokeWidth={2.4} />
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Calculator</div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 1 }}>Takealot fees on a vape</div>
+            </div>
+            {(calcPrice || calcCost || calcShip || calcOther) && (
+              <button onClick={() => { setCalcPrice(""); setCalcCost(""); setCalcShip(""); setCalcOther(""); }} style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.5)", background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT }}>Reset</button>
+            )}
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+            <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 14 }}>
+              {[
+                { label: "Selling price", hint: "what the customer pays, incl VAT", value: calcPrice, set: setCalcPrice },
+                { label: "Cost of product", hint: "incl VAT, as the spreadsheet keeps it", value: calcCost, set: setCalcCost },
+                { label: "Cost to ship to Takealot DC", hint: "per unit — leave blank for lead time", value: calcShip, set: setCalcShip },
+                { label: "Other costs", hint: "optional", value: calcOther, set: setCalcOther },
+              ].map((f, i) => (
+                <div key={f.label} style={{ marginTop: i === 0 ? 0 : 13 }}>
+                  <div style={{ fontSize: 13, color: "rgba(255,255,255,0.78)", fontWeight: 600, marginBottom: 5 }}>{f.label}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <span style={{ fontSize: 14, color: FAINT, fontWeight: 600, width: 12 }}>R</span>
+                    {/* inputMode decimal gives a phone the number pad while
+                        still allowing an empty box and a decimal point;
+                        type="number" would not. */}
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={f.value}
+                      onChange={(e) => f.set(e.target.value.replace(/[^0-9.]/g, ""))}
+                      placeholder="0"
+                      style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid " + PANEL_BORDER, borderRadius: 11, padding: "10px 12px", color: "#fff", fontSize: 15.5, fontFamily: FONT, outline: "none", ...NUM }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.33)", marginTop: 4 }}>{f.hint}</div>
+                </div>
+              ))}
+            </div>
+
+            {calcResult.price > 0 ? (
+              <>
+                <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
+                    <span style={{ fontSize: 11, color: FAINT, textTransform: "uppercase", letterSpacing: "0.06em" }}>Estimated fees</span>
+                    <button onClick={() => setCalcVat((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", cursor: "pointer", fontFamily: FONT, padding: 0 }}>
+                      <span style={{ width: 15, height: 15, borderRadius: 4, border: "1.5px solid " + (calcVat ? WA : "rgba(255,255,255,0.3)"), background: calcVat ? WA : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {calcVat && <Check size={11} color="#0C0F14" strokeWidth={3.4} />}
+                      </span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.6)" }}>Include VAT</span>
+                    </button>
+                  </div>
+
+                  <WaterfallRow label="Selling price" value={rand(calcShown.price)} />
+                  <WaterfallRow label={"Success fee · " + (SUCCESS_FEE_RATE * (calcVat ? 1 + VAT_RATE : 1) * 100).toFixed(2) + "%"} value={"-" + rand(calcShown.successFee)} accent={"#F87171"} />
+                  <WaterfallRow label="Fulfilment fee · flat per unit" value={"-" + rand(calcShown.fulfilmentFee)} accent={"#F87171"} />
+                  <div style={{ height: 1, background: PANEL_HAIR, margin: "9px 0" }} />
+                  <WaterfallRow label="Net sales" value={rand(calcShown.netSales)} bold />
+                  {calcResult.productCost > 0 && <WaterfallRow label="Cost of product" value={"-" + rand(calcShown.productCost)} accent={"#F87171"} />}
+                  {calcResult.dcShipping > 0 && <WaterfallRow label="Cost to ship to DC" value={"-" + rand(calcShown.dcShipping)} accent={"#F87171"} />}
+                  {calcResult.otherCosts > 0 && <WaterfallRow label="Other costs" value={"-" + rand(calcShown.otherCosts)} accent={"#F87171"} />}
+                  <div style={{ height: 1, background: PANEL_HAIR, margin: "9px 0" }} />
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>Net profit</span>
+                    <span style={{ fontSize: 17, fontWeight: 800, color: calcResult.netProfit >= 0 ? POS : "#F87171", ...NUM }}>
+                      {rand(calcShown.netProfit)}
+                      <span style={{ fontSize: 12.5, fontWeight: 600, marginLeft: 7 }}>{calcResult.netMargin}%</span>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Takealot's total share, which the portal never states
+                    outright, plus the two prices worth knowing. The
+                    fulfilment fee is flat, so this is the number that
+                    quietly ruins a cheap listing. */}
+                <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, padding: 14, marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: FAINT, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 9 }}>What this means</div>
+                  <WaterfallRow label="Takealot keeps" value={rand(calcShown.fees) + " · " + calcResult.feeShare + "%"} accent={"#F87171"} />
+                  <WaterfallRow label="Break-even price" value={rand(calcVat ? calcBreakEven : exclVat(calcBreakEven))} />
+                  {calcTarget15 !== null && (
+                    <WaterfallRow label="Price for a 15% margin" value={rand(calcVat ? calcTarget15 : exclVat(calcTarget15))} />
+                  )}
+                  {calcResult.netProfit < 0 && (
+                    <div style={{ marginTop: 10, fontSize: 11.5, color: "#F87171", lineHeight: 1.45 }}>
+                      Loses {rand(Math.abs(calcShown.netProfit))} a unit. The fulfilment fee is flat,
+                      so this does not improve by selling more of them.
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div style={{ padding: "26px 16px 20px", textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.35)", lineHeight: 1.5 }}>
+                Enter a selling price to see what Takealot takes.
+              </div>
+            )}
+
+            {/* Provenance matters more than usual here: these rates moved
+                this year (R48.30 to R37.95 in April) and will move again. */}
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", lineHeight: 1.55, padding: "0 2px" }}>
+              Vapes only. A {(SUCCESS_FEE_RATE * 115).toFixed(2)}% success fee and a flat {rand(37.95)} fulfilment
+              fee, both incl VAT, read off the 25,681 vape units Takealot has actually charged this
+              store for since April — and matching the portal's own estimator. Lead time and
+              in-stock are charged the same; they differ only by what you spend getting stock to
+              the DC. Excludes storage, subscription and other account-level fees. Rates last
+              checked {RATES_VERIFIED}.
+            </div>
+          </div>
+        </div>
 
         {/* Ask Tim */}
         <div style={{ position: "absolute", inset: 0, zIndex: 72, background: "#0C0F14", transform: timOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
