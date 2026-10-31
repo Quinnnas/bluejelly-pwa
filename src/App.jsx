@@ -545,6 +545,17 @@ function Collapse({ open, children, duration = "0.3s" }) {
 }
 
 // The hero chart's viewBox height, shared by the SVG and its hit areas.
+// "2026-10-31" -> "Saturday 31 October", so the row says which day's
+// trade you are about to open rather than a bare filename.
+function dailyPretty(iso) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (isNaN(d.getTime())) return iso;
+  const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][d.getUTCDay()];
+  const month = ["January", "February", "March", "April", "May", "June", "July",
+    "August", "September", "October", "November", "December"][d.getUTCMonth()];
+  return `${day} ${d.getUTCDate()} ${month}`;
+}
+
 const H_CHART = 92;
 
 function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, currentEmail = USER_EMAIL, onUpdateName = () => {} }) {
@@ -686,6 +697,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const RETURNS_PAGE = 100;
   const [returnLimit, setReturnLimit] = useState(RETURNS_PAGE);
   const [returnDetail, setReturnDetail] = useState(null);
+  const [dailyOpen, setDailyOpen] = useState(false);
+  // What is actually in the reports bucket, per brand: the newest PDF the
+  // store PC has uploaded. Loaded when the screen opens rather than on
+  // every refresh — it is one request and it changes once a day.
+  const [dailyFiles, setDailyFiles] = useState(null);
+  const [dailyError, setDailyError] = useState("");
+  const [dailyBusy, setDailyBusy] = useState("");
   const [calcOpen, setCalcOpen] = useState(false);
   // Strings, not numbers: a number field has to be allowed to be empty
   // while it is being retyped, and 0 is a legitimate value for the two
@@ -985,7 +1003,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     { label: "Reconciliation", icon: FileText },
     { label: "Sales Ops", icon: Briefcase },
     { label: "Buy Box Tracking", icon: Crosshair },
-    { label: "Reports", icon: BarChart3, children: ["Stock Replenishment", "Weekly Report", "Monthly Report"] },
+    { label: "Reports", icon: BarChart3, children: ["Daily Orders", "Stock Replenishment", "Weekly Report", "Monthly Report"] },
     { label: "Automations", icon: Zap },
     { label: "Calculator", icon: CalculatorIcon },
     { label: "Ask Tim", icon: Sparkles },
@@ -1064,6 +1082,64 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
     }),
     [calcMinPrice, calcCost, calcShip, calcOther]
   );
+
+  // The five report folders in the bucket. Kept here rather than read
+  // from the lib so the screen says the same thing whether or not a
+  // brand has ever been generated.
+  const DAILY_REPORTS = useMemo(() => ([
+    { key: "blvk", label: "BLVK" },
+    { key: "nasty", label: "Nasty" },
+    { key: "elfbar", label: "ElfBar" },
+    { key: "dinnerlady", label: "Dinner Lady" },
+    { key: "other", label: "Other" },
+  ]), []);
+
+  // One listing per brand folder, newest first. A brand with no folder
+  // yet is not an error — four of the five have never been generated.
+  const loadDailyFiles = React.useCallback(async () => {
+    setDailyError("");
+    try {
+      const found = {};
+      for (const r of DAILY_REPORTS) {
+        const { data, error } = await supabase.storage
+          .from("reports")
+          .list(r.key, { limit: 30, sortBy: { column: "name", order: "desc" } });
+        if (error) throw error;
+        const pdfs = (data || []).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+        found[r.key] = pdfs[0] ? { name: pdfs[0].name, date: pdfs[0].name.replace(/\.pdf$/i, "") } : null;
+      }
+      setDailyFiles(found);
+    } catch (e) {
+      setDailyFiles({});
+      setDailyError(e?.message || String(e));
+    }
+  }, [DAILY_REPORTS]);
+
+  useEffect(() => {
+    if (dailyOpen && dailyFiles === null) loadDailyFiles();
+  }, [dailyOpen, dailyFiles, loadDailyFiles]);
+
+  // The bucket is private, so the file is reached through a short-lived
+  // signed URL rather than a public link anyone could keep. Opened rather
+  // than embedded: a phone renders a PDF properly in its own viewer, and
+  // an iframe on iOS often just downloads it instead.
+  const openDailyPdf = async (brand) => {
+    const file = dailyFiles?.[brand.key];
+    if (!file) return;
+    setDailyBusy(brand.key);
+    try {
+      const { data, error } = await supabase.storage
+        .from("reports")
+        .createSignedUrl(`${brand.key}/${file.name}`, 3600);
+      if (error) throw error;
+      window.open(data.signedUrl, "_blank", "noopener");
+    } catch (e) {
+      flash("Couldn't open the report");
+      setDailyError(e?.message || String(e));
+    } finally {
+      setDailyBusy("");
+    }
+  };
 
   const active = segments[seg] || segments[0];
   const row = active.row;
@@ -1504,15 +1580,15 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                       {m.label}
                       <ChevronRight size={17} strokeWidth={2.4} color="rgba(255,255,255,0.4)" style={{ marginLeft: "auto", transform: reportsOpen ? "rotate(90deg)" : "none", transition: "transform 0.2s ease" }} />
                     </button>
-                    <div style={{ maxHeight: reportsOpen ? 200 : 0, overflow: "hidden", transition: "max-height 0.26s ease" }}>
+                    <Collapse open={reportsOpen} duration="0.26s">
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "2px 0 4px 20px", paddingLeft: 14, borderLeft: "1px solid rgba(255,255,255,0.1)" }}>
                         {m.children.map((c) => (
-                          <button key={c} onClick={() => { setMenuOpen(false); openReport(c); }} style={{ display: "flex", alignItems: "center", width: "100%", padding: "11px 14px", borderRadius: 11, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 14.5, fontWeight: 500, background: "transparent", color: "rgba(255,255,255,0.6)" }}>
+                          <button key={c} onClick={() => { setMenuOpen(false); if (c === "Daily Orders") setDailyOpen(true); else openReport(c); }} style={{ display: "flex", alignItems: "center", width: "100%", padding: "11px 14px", borderRadius: 11, border: "none", cursor: "pointer", textAlign: "left", fontFamily: FONT, fontSize: 14.5, fontWeight: 500, background: "transparent", color: "rgba(255,255,255,0.6)" }}>
                             {c}
                           </button>
                         ))}
                       </div>
-                    </div>
+                    </Collapse>
                   </div>
                 );
               }
@@ -2018,6 +2094,72 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               in-stock are charged the same; they differ only by what you spend getting stock to
               the DC. Excludes storage, subscription and other account-level fees. Rates last
               checked {RATES_VERIFIED}.
+            </div>
+          </div>
+        </div>
+
+        {/* Daily Orders — the brand monitor PDFs the store PC generates
+            at 06:00. The app does not re-render the report: it hands the
+            phone the real file, which opens in the phone's own PDF viewer.
+            That is what the owner asked for, and it is also the version
+            that looks right on a phone without fighting iOS.
+
+            The file is a 06:00 snapshot from that machine, so a morning
+            the PC did not wake up has no file — which has happened — and
+            the screen says so rather than showing yesterday as today. */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 71, background: "#0C0F14", transform: dailyOpen ? "translateX(0)" : "translateX(100%)", transition: "transform 0.32s cubic-bezier(0.4,0,0.2,1)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "50px 16px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            <button onClick={() => setDailyOpen(false)} style={{ width: 38, height: 38, borderRadius: 19, background: "rgba(255,255,255,0.07)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <ChevronLeft size={20} color="#fff" strokeWidth={2.4} />
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#fff", letterSpacing: "-0.3px" }}>Daily Orders</div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 1 }}>Pick a range to open its report</div>
+            </div>
+            <button onClick={() => { setDailyFiles(null); }} style={{ width: 36, height: 36, borderRadius: 18, background: "rgba(255,255,255,0.07)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <RefreshCw size={16} color="rgba(255,255,255,0.65)" strokeWidth={2.4} />
+            </button>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "16px 16px 40px" }}>
+            {dailyFiles === null ? (
+              <div style={{ padding: "30px 16px", textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.4)" }}>Looking for today's reports…</div>
+            ) : (
+              <div style={{ background: `linear-gradient(180deg, ${PANEL_TOP} 0%, ${PANEL_BOT} 100%)`, border: "1px solid " + PANEL_BORDER, borderRadius: 16, overflow: "hidden" }}>
+                {DAILY_REPORTS.map((r, i) => {
+                  const file = dailyFiles[r.key];
+                  const busy = dailyBusy === r.key;
+                  return (
+                    <button
+                      key={r.key}
+                      onClick={() => openDailyPdf(r)}
+                      disabled={!file || busy}
+                      style={{ display: "flex", alignItems: "center", gap: 13, width: "100%", padding: "15px 15px", border: "none", borderTop: i === 0 ? "none" : "1px solid " + PANEL_HAIR, background: "transparent", cursor: file ? "pointer" : "default", textAlign: "left", fontFamily: FONT, opacity: file ? 1 : 0.45 }}
+                    >
+                      <span style={{ width: 36, height: 36, borderRadius: 10, background: file ? "rgba(37,211,102,0.14)" : "rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <FileText size={17} color={file ? WA : "rgba(255,255,255,0.35)"} strokeWidth={2.2} />
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 15, fontWeight: 600, color: "#fff" }}>{r.label}</span>
+                        <span style={{ display: "block", fontSize: 11.5, color: "rgba(255,255,255,0.42)", marginTop: 2 }}>
+                          {busy ? "Opening…" : file ? dailyPretty(file.date) : "Not generated yet"}
+                        </span>
+                      </span>
+                      {file && <ChevronRight size={18} color="rgba(255,255,255,0.3)" strokeWidth={2.4} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {dailyError && (
+              <div style={{ marginTop: 12, fontSize: 11.5, color: "#F87171", lineHeight: 1.5 }}>{dailyError}</div>
+            )}
+
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", lineHeight: 1.55, padding: "14px 2px 0" }}>
+              Each report is generated on the store PC at 06:00 and opens in your phone's own PDF
+              viewer. A morning the PC was asleep has no file, so the date under each range is the
+              one you are actually opening.
             </div>
           </div>
         </div>
