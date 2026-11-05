@@ -385,6 +385,10 @@ const EMPTY_DATA = Object.freeze({
     elapsed: { today: 1, week: 1, month: 1 },
   },
   orders: [], offers: [], rawSales: [], targets: {}, recommendations: [],
+  // null means "no trial running", which is what the block checks for.
+  // It must still be present here: adding a field to the loader without
+  // adding it to EMPTY_DATA has blanked this app twice.
+  managed: null,
   returns: {
     lines: 0, units: 0, defectUnits: 0, cancelUnits: 0, otherUnits: 0,
     value: 0, netValue: 0, sold: 0, rate: 0, defectRate: 0, removals: 0,
@@ -653,6 +657,10 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [buyBoxOpen, setBuyBoxOpen] = useState(false);
   const [salesOpsOpen, setSalesOpsOpen] = useState(false);
   const [salesOpsFilter, setSalesOpsFilter] = useState("all");
+  // The managed pricing log shows the four most recent moves; the rest
+  // are a tap away. Four fits a phone without pushing the actual
+  // recommendation cards off the screen.
+  const [managedAll, setManagedAll] = useState(false);
 
   // Decisions live in Supabase, not component state. Approving something
   // and having it reappear on refresh would make the screen useless.
@@ -684,6 +692,8 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   };
 
   const liveRecs = D.recommendations;
+  // null whenever no trial is running, which is the normal state.
+  const M = D.managed;
   const salesOpsFiltered = salesOpsFilter === "all"
     ? liveRecs
     : liveRecs.filter((r) => r.type === salesOpsFilter);
@@ -2964,6 +2974,58 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                 <p style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px", color: SO.goldLight, margin: 0, ...NUM }}>{salesOpsApprovedToday}</p>
               </div>
             </div>
+
+            {/* Managed pricing trial. Reads price_experiments and
+                price_changes; renders nothing at all when no trial is
+                running, which is the normal state. Every number here was
+                computed by takealot/price_policy.py — the app displays
+                the decision and its reasoning, it does not re-derive it. */}
+            {M && (
+              <div style={{ borderRadius: 14, border: "1px solid " + SO.border, backgroundColor: SO.surface, padding: 14, marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <p style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.8, color: SO.textFainter, margin: 0 }}>Managed pricing</p>
+                    <p style={{ fontSize: 16, fontWeight: 700, color: SO.text, margin: "3px 0 0", letterSpacing: "-0.2px", ...NUM }}>{M.family}</p>
+                  </div>
+                  <span style={{ fontSize: 11.5, color: SO.textFaint, ...NUM }}>
+                    {"R" + M.bandLow.toFixed(0) + " – R" + M.bandHigh.toFixed(0)}
+                  </span>
+                </div>
+
+                <p style={{ fontSize: 11.5, color: SO.textFaint, lineHeight: 1.5, margin: "0 0 12px" }}>
+                  {M.counts.applied} listing{M.counts.applied !== 1 ? "s" : ""} moved
+                  {M.counts.locked > 0 ? " · " + M.counts.locked + " holding a full cycle" : ""}
+                  {M.counts.refused > 0 ? " · " + M.counts.refused + " refused" : ""}
+                  {" · baseline " + M.baselineUnits + " units, " + rand(Math.round(M.baselineProfit)) + " over 4 weeks"}
+                </p>
+
+                {M.skus.slice(0, managedAll ? M.skus.length : 4).map((c) => (
+                  <div key={c.sku} style={{ borderTop: "1px solid " + SO.border, paddingTop: 9, marginTop: 9 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: SO.text, ...NUM }}>{c.sku}</span>
+                      <span style={{ fontSize: 12.5, color: SO.text, ...NUM }}>
+                        {"R" + c.from.toFixed(0) + " → R" + c.to.toFixed(0)}
+                        <span style={{ color: c.marginAfter >= c.marginBefore ? SO.green : SO.redLight, marginLeft: 7 }}>
+                          {(c.marginAfter >= c.marginBefore ? "+" : "") + rand(c.marginAfter - c.marginBefore) + "/unit"}
+                        </span>
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 11, color: SO.textFaint, lineHeight: 1.45, margin: "4px 0 0" }}>{c.reasoning}</p>
+                    {c.lockLeft > 0 && (
+                      <p style={{ fontSize: 10.5, color: SO.textFainter, margin: "4px 0 0", ...NUM }}>
+                        {"Held " + c.lockLeft + " more day" + (c.lockLeft !== 1 ? "s" : "") + " — a price needs a full payday cycle before its units mean anything"}
+                      </p>
+                    )}
+                  </div>
+                ))}
+
+                {M.skus.length > 4 && (
+                  <button onClick={() => setManagedAll((v) => !v)} style={{ marginTop: 11, padding: "6px 12px", borderRadius: 8, fontSize: 11.5, fontWeight: 600, border: "1px solid " + SO.border, backgroundColor: "transparent", color: SO.textFaint, cursor: "pointer", fontFamily: FONT }}>
+                    {managedAll ? "Show fewer" : "Show all " + M.skus.length}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Filter tabs */}
             <div style={{ display: "flex", gap: 4, marginBottom: 16, padding: 4, borderRadius: 10, backgroundColor: SO.surface, border: "1px solid " + SO.border, width: "fit-content" }}>

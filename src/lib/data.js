@@ -12,6 +12,7 @@
  */
 import { supabase } from "./supabaseClient";
 import {
+  buildManagedPricing,
   buildRecommendations,
   buildOffers,
   buildOrders,
@@ -132,7 +133,8 @@ async function fetchCostHistory() {
 export async function loadStoreData(now = Date.now()) {
   const since = historyStart(now).toISOString();
 
-  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, historyRows, returnsRes, recsRes] = await Promise.all([
+  const [salesRes, offersRes, costsRes, targetsRes, coverageStart, historyRows, returnsRes, recsRes,
+    trialsRes, priceChangesRes] = await Promise.all([
     fetchAllSales(since),
     supabase.from("offers_cache").select("*").order("sku"),
     supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat, min_price, max_price"),
@@ -160,6 +162,17 @@ export async function loadStoreData(now = Date.now()) {
       .eq("is_current", true)
       .order("value_rand", { ascending: false })
       .limit(200),
+    // The managed pricing trial and its change log. Two small tables —
+    // one row per trial, a handful of rows per month of moves — so no
+    // paging and no date window. Both are append-only by design: the
+    // value of the log is the sequence, and a revert is a new row rather
+    // than an edit to the row it undoes.
+    supabase.from("price_experiments").select("*"),
+    supabase
+      .from("price_changes")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500),
   ]);
 
   const errors = {};
@@ -176,6 +189,11 @@ export async function loadStoreData(now = Date.now()) {
   // returns_cache is newest of all — a missing table just means migration
   // 011 has not run. Non-fatal, same as targets and Sales Ops.
   if (returnsRes.error) errors.returns = returnsRes.error.message;
+  // The pricing tables are newest of all — a missing table just means
+  // migration 016 has not run. Non-fatal: the block simply does not
+  // render, which is also the right behaviour when no trial is running.
+  if (trialsRes.error) errors.managed = trialsRes.error.message;
+  else if (priceChangesRes.error) errors.managed = priceChangesRes.error.message;
 
   const rawSales = prepareSales(salesRes.data || []);
 
@@ -219,6 +237,9 @@ export async function loadStoreData(now = Date.now()) {
     targets,
     lastSync: lastSync ? new Date(lastSync).getTime() : null,
     recommendations: buildRecommendations(recsRes.data || []),
+    managed: buildManagedPricing(
+      trialsRes.data || [], priceChangesRes.data || [], offers, now
+    ),
     counts: { sales: rawSales.length, offers: offers.length, costs: costsBySku.size },
     // True when the sync has genuinely never populated anything — the
     // difference between "no data yet" and "a quiet trading day".

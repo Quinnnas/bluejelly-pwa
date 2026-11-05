@@ -935,3 +935,92 @@ export function buildRecommendations(rows) {
       return b.value - a.value;
     });
 }
+
+// The managed pricing trial: one SKU family priced actively inside an
+// agreed band, every move recorded with the reasoning that produced it.
+//
+// This RESHAPES and does not recompute. Margins, landed costs and the
+// reasoning all come from `takealot/price_policy.py` via the
+// `price_changes` table, because the rule in this project is that the
+// formula lives in Python and the app displays its result — two
+// implementations of a margin would drift, and this one is about money.
+//
+// The only arithmetic here is counting and the age of a change in days,
+// which are display concerns and belong on this side.
+export function buildManagedPricing(experiments, changes, offers, now = Date.now()) {
+  const trial = (experiments || []).find(
+    (e) => e.status === "running" || e.status === "planning"
+  );
+  if (!trial) return null;
+
+  const priceOf = new Map((offers || []).map((o) => [o.sku, num(o.price)]));
+
+  const log = (changes || [])
+    .filter((c) => c.experiment_id === trial.id)
+    .map((c) => {
+      const at = c.applied_at ? new Date(c.applied_at).getTime() : null;
+      // Floor, not round: a change made eleven hours ago is nought days
+      // old, and calling it one would make the lock look shorter than it
+      // is on the one screen that has to be trusted about it.
+      const days = at ? Math.floor((now - at) / 86400000) : null;
+      return {
+        id: c.id,
+        sku: c.sku,
+        from: num(c.from_price),
+        to: num(c.to_price),
+        marginBefore: num(c.margin_before),
+        marginAfter: num(c.margin_after),
+        reasoning: c.reasoning || "",
+        refusedReason: c.refused_reason || null,
+        applied: !!c.applied,
+        appliedAt: c.applied_at || null,
+        revertedAt: c.reverted_at || null,
+        changedBy: c.changed_by || null,
+        days,
+        // Days still to run before this move has seen a full payday
+        // cycle and its units mean anything.
+        lockLeft: days === null ? null : Math.max(0, 14 - days),
+      };
+    })
+    .sort((a, b) => String(b.appliedAt || "").localeCompare(String(a.appliedAt || "")));
+
+  const applied = log.filter((c) => c.applied && !c.revertedAt);
+  // One row per SKU, newest move first, so the list reads as "where each
+  // listing stands" rather than as a transaction log.
+  const bySku = [];
+  const seen = new Set();
+  for (const c of applied) {
+    if (seen.has(c.sku)) continue;
+    seen.add(c.sku);
+    bySku.push({ ...c, livePrice: priceOf.has(c.sku) ? priceOf.get(c.sku) : null });
+  }
+
+  const marginGain = applied.reduce((a, c) => a + (c.marginAfter - c.marginBefore), 0);
+
+  return {
+    id: trial.id,
+    family: trial.family || "",
+    bandLow: num(trial.band_low),
+    bandHigh: num(trial.band_high),
+    objective: trial.objective || "",
+    status: trial.status || "",
+    baselineUnits: num(trial.baseline_units),
+    baselineProfit: num(trial.baseline_profit),
+    baselineFrom: trial.baseline_from || null,
+    baselineTo: trial.baseline_to || null,
+    startedAt: trial.started_at || null,
+    notes: trial.notes || "",
+    log,
+    skus: bySku,
+    counts: {
+      applied: applied.length,
+      refused: log.filter((c) => !c.applied).length,
+      reverted: log.filter((c) => c.revertedAt).length,
+      locked: applied.filter((c) => (c.lockLeft ?? 0) > 0).length,
+    },
+    // Extra margin per unit across every listing moved, summed. NOT a
+    // monthly figure: multiplying by volume would be a forecast, and the
+    // whole point of the trial is that volume is the unknown.
+    marginGain,
+  };
+}

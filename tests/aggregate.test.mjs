@@ -11,6 +11,7 @@
  */
 import assert from "node:assert/strict";
 import {
+  buildManagedPricing,
   buildOffers,
   canonicalSku,
   buildCostHistory,
@@ -1100,6 +1101,94 @@ test("line counts exist for every period at the right length", () => {
   assert.equal(s.lines.today.length, 24);
   assert.equal(s.shippedLines.week.length, 7);
   assert.equal(s.lines.month.length, 4);
+});
+
+// --- managed pricing -------------------------------------------------
+// The trial hands one SKU family over to be priced actively. These
+// guard the SHAPE the panel reads, not the pricing rules themselves --
+// those live in takealot/price_policy.py and are tested there, because
+// the whole point is that the formula exists in exactly one place.
+const MP_TRIAL = { id: 7, family: "NSTY55KX", band_low: 281, band_high: 355,
+  status: "running", baseline_units: 48, baseline_profit: 341 };
+const MP_NOW = new Date("2026-11-05T18:00:00+02:00").getTime();
+const chg = (sku, over) => ({
+  id: sku, experiment_id: 7, sku, from_price: 285, to_price: 297,
+  margin_before: 9, margin_after: 19.48, reasoning: "holding the box",
+  applied: true, applied_at: "2026-11-05T12:00:00+02:00", ...over,
+});
+
+test("no running trial renders nothing", () => {
+  assert.equal(buildManagedPricing([], [], [], MP_NOW), null);
+  assert.equal(buildManagedPricing([{ ...MP_TRIAL, status: "ended" }], [], [], MP_NOW), null);
+});
+test("the band and baseline come straight from the trial row", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [], MP_NOW);
+  assert.equal(m.bandLow, 281);
+  assert.equal(m.bandHigh, 355);
+  assert.equal(m.baselineUnits, 48);
+  assert.equal(m.baselineProfit, 341);
+});
+test("changes from another trial are not mixed in", () => {
+  const m = buildManagedPricing([MP_TRIAL], [chg("A"), chg("B", { experiment_id: 99 })], [], MP_NOW);
+  assert.equal(m.log.length, 1);
+  assert.equal(m.log[0].sku, "A");
+});
+test("a refused attempt is kept but not counted as applied", () => {
+  // Refusals are worth keeping: a pattern of them says the band or the
+  // margin floor is wrong, which is a decision for Quintin.
+  const m = buildManagedPricing([MP_TRIAL],
+    [chg("A"), chg("B", { applied: false, applied_at: null, refused_reason: "locked" })], [], MP_NOW);
+  assert.equal(m.counts.applied, 1);
+  assert.equal(m.counts.refused, 1);
+  assert.equal(m.log.length, 2);
+});
+test("a reverted change drops out of the per-SKU view", () => {
+  const m = buildManagedPricing([MP_TRIAL],
+    [chg("A", { reverted_at: "2026-11-05T13:00:00+02:00" })], [], MP_NOW);
+  assert.equal(m.counts.reverted, 1);
+  assert.equal(m.skus.length, 0, "a reverted price is not where the listing stands");
+});
+test("only the newest move per SKU shows, newest first", () => {
+  const m = buildManagedPricing([MP_TRIAL], [
+    chg("A", { id: "old", from_price: 281, to_price: 285, applied_at: "2026-10-01T12:00:00+02:00" }),
+    chg("A", { id: "new", from_price: 285, to_price: 297, applied_at: "2026-11-05T12:00:00+02:00" }),
+  ], [], MP_NOW);
+  assert.equal(m.skus.length, 1);
+  assert.equal(m.skus[0].id, "new");
+  assert.equal(m.log.length, 2, "the full history is still there to read");
+});
+test("the lock counts down in whole days from the move", () => {
+  // Floored, not rounded: a change made six hours ago is nought days
+  // old, and calling it one would make the lock look shorter than it is.
+  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [], MP_NOW);
+  assert.equal(m.log[0].days, 0);
+  assert.equal(m.log[0].lockLeft, 14);
+  const later = buildManagedPricing([MP_TRIAL], [chg("A")], [],
+    new Date("2026-11-20T18:00:00+02:00").getTime());
+  assert.equal(later.log[0].lockLeft, 0, "fifteen days on, it is free to move again");
+  assert.equal(later.counts.locked, 0);
+});
+test("margins are read, never recomputed", () => {
+  // If this ever starts deriving a margin from price and cost it will
+  // drift from Python's, and the screen will disagree with the decision
+  // that was actually made. The stored values are the record.
+  const m = buildManagedPricing([MP_TRIAL],
+    [chg("A", { margin_before: 1.11, margin_after: 2.22 })], [], MP_NOW);
+  assert.ok(Math.abs(m.marginGain - 1.11) < 1e-9);
+});
+test("the live price is attached when the offer is known", () => {
+  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [{ sku: "A", price: 297 }], MP_NOW);
+  assert.equal(m.skus[0].livePrice, 297);
+  const none = buildManagedPricing([MP_TRIAL], [chg("A")], [], MP_NOW);
+  assert.equal(none.skus[0].livePrice, null, "unknown is null, not zero");
+});
+test("missing and malformed rows do not throw", () => {
+  const m = buildManagedPricing([MP_TRIAL], [{ experiment_id: 7, sku: "A" }], null, MP_NOW);
+  assert.equal(m.log[0].from, 0);
+  assert.equal(m.log[0].days, null);
+  assert.equal(m.log[0].lockLeft, null);
+  assert.equal(m.skus.length, 0, "an unapplied row is not a position");
+  assert.doesNotThrow(() => buildManagedPricing([MP_TRIAL], null, null, MP_NOW));
 });
 
 console.log(
