@@ -664,10 +664,6 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
   const [buyBoxOpen, setBuyBoxOpen] = useState(false);
   const [salesOpsOpen, setSalesOpsOpen] = useState(false);
   const [salesOpsFilter, setSalesOpsFilter] = useState("all");
-  // The managed pricing log shows the four most recent moves; the rest
-  // are a tap away. Four fits a phone without pushing the actual
-  // recommendation cards off the screen.
-  const [managedAll, setManagedAll] = useState(false);
 
   // Decisions live in Supabase, not component state. Approving something
   // and having it reappear on refresh would make the screen useless.
@@ -3012,7 +3008,7 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                   {"Baseline " + M.baselineUnits + " units, " + rand(Math.round(M.baselineProfit)) + " over 4 weeks"}
                 </p>
 
-                {M.board.slice(0, managedAll ? M.board.length : 6).map((r) => (
+                {M.board.map((r) => (
                   <div key={r.sku} style={{ borderTop: "1px solid " + SO.border, paddingTop: 9, marginTop: 9 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
                       <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", padding: "2px 6px", borderRadius: 5, color: MANAGED_TONE[r.action] || SO.textFaint, border: "1px solid " + (MANAGED_TONE[r.action] || SO.border) + "55" }}>
@@ -3045,11 +3041,6 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                   </div>
                 ))}
 
-                {M.board.length > 6 && (
-                  <button onClick={() => setManagedAll((v) => !v)} style={{ marginTop: 11, padding: "6px 12px", borderRadius: 8, fontSize: 11.5, fontWeight: 600, border: "1px solid " + SO.border, backgroundColor: "transparent", color: SO.textFaint, cursor: "pointer", fontFamily: FONT }}>
-                    {managedAll ? "Show fewer" : "Show all " + M.board.length}
-                  </button>
-                )}
               </div>
             )}
 
