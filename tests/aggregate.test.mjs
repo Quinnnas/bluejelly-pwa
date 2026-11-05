@@ -1118,18 +1118,18 @@ const chg = (sku, over) => ({
 });
 
 test("no running trial renders nothing", () => {
-  assert.equal(buildManagedPricing([], [], [], MP_NOW), null);
-  assert.equal(buildManagedPricing([{ ...MP_TRIAL, status: "ended" }], [], [], MP_NOW), null);
+  assert.equal(buildManagedPricing([], [], [], [], MP_NOW), null);
+  assert.equal(buildManagedPricing([{ ...MP_TRIAL, status: "ended" }], [], [], [], MP_NOW), null);
 });
 test("the band and baseline come straight from the trial row", () => {
-  const m = buildManagedPricing([MP_TRIAL], [], [], MP_NOW);
+  const m = buildManagedPricing([MP_TRIAL], [], [], [], MP_NOW);
   assert.equal(m.bandLow, 281);
   assert.equal(m.bandHigh, 355);
   assert.equal(m.baselineUnits, 48);
   assert.equal(m.baselineProfit, 341);
 });
 test("changes from another trial are not mixed in", () => {
-  const m = buildManagedPricing([MP_TRIAL], [chg("A"), chg("B", { experiment_id: 99 })], [], MP_NOW);
+  const m = buildManagedPricing([MP_TRIAL], [chg("A"), chg("B", { experiment_id: 99 })], [], [], MP_NOW);
   assert.equal(m.log.length, 1);
   assert.equal(m.log[0].sku, "A");
 });
@@ -1137,14 +1137,14 @@ test("a refused attempt is kept but not counted as applied", () => {
   // Refusals are worth keeping: a pattern of them says the band or the
   // margin floor is wrong, which is a decision for Quintin.
   const m = buildManagedPricing([MP_TRIAL],
-    [chg("A"), chg("B", { applied: false, applied_at: null, refused_reason: "locked" })], [], MP_NOW);
+    [chg("A"), chg("B", { applied: false, applied_at: null, refused_reason: "locked" })], [], [], MP_NOW);
   assert.equal(m.counts.applied, 1);
   assert.equal(m.counts.refused, 1);
   assert.equal(m.log.length, 2);
 });
 test("a reverted change drops out of the per-SKU view", () => {
   const m = buildManagedPricing([MP_TRIAL],
-    [chg("A", { reverted_at: "2026-11-05T13:00:00+02:00" })], [], MP_NOW);
+    [chg("A", { reverted_at: "2026-11-05T13:00:00+02:00" })], [], [], MP_NOW);
   assert.equal(m.counts.reverted, 1);
   assert.equal(m.skus.length, 0, "a reverted price is not where the listing stands");
 });
@@ -1152,7 +1152,7 @@ test("only the newest move per SKU shows, newest first", () => {
   const m = buildManagedPricing([MP_TRIAL], [
     chg("A", { id: "old", from_price: 281, to_price: 285, applied_at: "2026-10-01T12:00:00+02:00" }),
     chg("A", { id: "new", from_price: 285, to_price: 297, applied_at: "2026-11-05T12:00:00+02:00" }),
-  ], [], MP_NOW);
+  ], [], [], MP_NOW);
   assert.equal(m.skus.length, 1);
   assert.equal(m.skus[0].id, "new");
   assert.equal(m.log.length, 2, "the full history is still there to read");
@@ -1160,10 +1160,10 @@ test("only the newest move per SKU shows, newest first", () => {
 test("the lock counts down in whole days from the move", () => {
   // Floored, not rounded: a change made six hours ago is nought days
   // old, and calling it one would make the lock look shorter than it is.
-  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [], MP_NOW);
+  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [], [], MP_NOW);
   assert.equal(m.log[0].days, 0);
   assert.equal(m.log[0].lockLeft, 14);
-  const later = buildManagedPricing([MP_TRIAL], [chg("A")], [],
+  const later = buildManagedPricing([MP_TRIAL], [chg("A")], [], [],
     new Date("2026-11-20T18:00:00+02:00").getTime());
   assert.equal(later.log[0].lockLeft, 0, "fifteen days on, it is free to move again");
   assert.equal(later.counts.locked, 0);
@@ -1173,22 +1173,91 @@ test("margins are read, never recomputed", () => {
   // drift from Python's, and the screen will disagree with the decision
   // that was actually made. The stored values are the record.
   const m = buildManagedPricing([MP_TRIAL],
-    [chg("A", { margin_before: 1.11, margin_after: 2.22 })], [], MP_NOW);
+    [chg("A", { margin_before: 1.11, margin_after: 2.22 })], [], [], MP_NOW);
   assert.ok(Math.abs(m.marginGain - 1.11) < 1e-9);
 });
 test("the live price is attached when the offer is known", () => {
-  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [{ sku: "A", price: 297 }], MP_NOW);
+  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [], [{ sku: "A", price: 297 }], MP_NOW);
   assert.equal(m.skus[0].livePrice, 297);
-  const none = buildManagedPricing([MP_TRIAL], [chg("A")], [], MP_NOW);
+  const none = buildManagedPricing([MP_TRIAL], [chg("A")], [], [], MP_NOW);
   assert.equal(none.skus[0].livePrice, null, "unknown is null, not zero");
 });
 test("missing and malformed rows do not throw", () => {
-  const m = buildManagedPricing([MP_TRIAL], [{ experiment_id: 7, sku: "A" }], null, MP_NOW);
+  const m = buildManagedPricing([MP_TRIAL], [{ experiment_id: 7, sku: "A" }], null, null, MP_NOW);
   assert.equal(m.log[0].from, 0);
   assert.equal(m.log[0].days, null);
   assert.equal(m.log[0].lockLeft, null);
   assert.equal(m.skus.length, 0, "an unapplied row is not a position");
-  assert.doesNotThrow(() => buildManagedPricing([MP_TRIAL], null, null, MP_NOW));
+  assert.doesNotThrow(() => buildManagedPricing([MP_TRIAL], null, null, null, MP_NOW));
+});
+
+// --- the board: every listing, not only the ones that moved ----------
+const pl = (sku, over) => ({
+  sku, is_current: true, action: "hold", price: 285, target_price: 285,
+  margin: 9, target_margin: 9, buybox_share: 0.9, cheapest_rival: 298,
+  stock: 5, units_recent: 2, days_idle: 3, reasoning: "steady", ...over,
+});
+
+test("the board carries every listing, including the untouched ones", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("A"), pl("B", { action: "raise", target_price: 297, target_margin: 19.48 }),
+    pl("C", { action: "blocked", stock: 0 }),
+  ], [], MP_NOW);
+  assert.equal(m.board.length, 3);
+  assert.deepEqual(m.actions, { hold: 1, raise: 1, blocked: 1 });
+});
+test("what needs attention sorts to the top", () => {
+  // Cuts and defends chase units, so they lead; blocked listings,
+  // which price cannot help at all, sink to the bottom.
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("Z", { action: "blocked" }), pl("Y", { action: "hold" }),
+    pl("X", { action: "raise", target_price: 297 }),
+    pl("W", { action: "cut", target_price: 273 }),
+  ], [], MP_NOW);
+  assert.deepEqual(m.board.map((r) => r.sku), ["W", "X", "Y", "Z"]);
+});
+test("a locked listing sorts below an identical free one", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("LOCKED", { action: "raise", target_price: 297, locked_days: 2 }),
+    pl("FREE", { action: "raise", target_price: 297 }),
+  ], [], MP_NOW);
+  assert.deepEqual(m.board.map((r) => r.sku), ["FREE", "LOCKED"]);
+  assert.equal(m.board[1].lockedDays, 2);
+});
+test("moving is target != price, not the action name", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("SAME", { action: "hold", target_price: 285 }),
+    pl("DIFF", { action: "cut", target_price: 273 }),
+  ], [], MP_NOW);
+  assert.equal(m.board.find((r) => r.sku === "SAME").moving, false);
+  assert.equal(m.board.find((r) => r.sku === "DIFF").moving, true);
+});
+test("never sold reads as null, not as zero days", () => {
+  // Zero would render as "sold 0d ago", i.e. today -- the exact
+  // opposite of the truth, on the signal the cut rule depends on.
+  const m = buildManagedPricing([MP_TRIAL], [], [pl("A", { days_idle: null })], [], MP_NOW);
+  assert.equal(m.board[0].daysIdle, null);
+  const sold = buildManagedPricing([MP_TRIAL], [], [pl("A", { days_idle: 0 })], [], MP_NOW);
+  assert.equal(sold.board[0].daysIdle, 0);
+});
+test("a missing rival or share is null, never zero", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("A", { cheapest_rival: null, buybox_share: null }),
+  ], [], MP_NOW);
+  assert.equal(m.board[0].rival, null);
+  assert.equal(m.board[0].share, null);
+});
+test("stale board rows are ignored", () => {
+  const m = buildManagedPricing([MP_TRIAL], [], [
+    pl("OLD", { is_current: false }), pl("NEW"),
+  ], [], MP_NOW);
+  assert.deepEqual(m.board.map((r) => r.sku), ["NEW"]);
+});
+test("no board yet still renders the trial", () => {
+  const m = buildManagedPricing([MP_TRIAL], [chg("A")], [], [], MP_NOW);
+  assert.deepEqual(m.board, []);
+  assert.deepEqual(m.actions, {});
+  assert.equal(m.counts.applied, 1);
 });
 
 console.log(

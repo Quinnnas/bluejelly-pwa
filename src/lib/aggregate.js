@@ -947,7 +947,7 @@ export function buildRecommendations(rows) {
 //
 // The only arithmetic here is counting and the age of a change in days,
 // which are display concerns and belong on this side.
-export function buildManagedPricing(experiments, changes, offers, now = Date.now()) {
+export function buildManagedPricing(experiments, changes, plan, offers, now = Date.now()) {
   const trial = (experiments || []).find(
     (e) => e.status === "running" || e.status === "planning"
   );
@@ -997,6 +997,45 @@ export function buildManagedPricing(experiments, changes, offers, now = Date.now
 
   const marginGain = applied.reduce((a, c) => a + (c.marginAfter - c.marginBefore), 0);
 
+  // Where every listing stands right now, including the ones left
+  // alone. A board showing only what moved makes the rest look
+  // unmanaged: seven of nineteen moved on the first run and the other
+  // twelve each had a reason nobody could see.
+  //
+  // Sorted by what needs attention: changes first, then listings
+  // waiting out their lock, then holds, then the ones price cannot
+  // help at all.
+  const RANK = { cut: 0, defend: 0, raise: 1, hold: 3, blocked: 4 };
+  const board = (plan || [])
+    .filter((r) => r.is_current !== false)
+    .map((r) => ({
+      sku: r.sku,
+      action: r.action || "hold",
+      price: num(r.price),
+      target: num(r.target_price),
+      margin: num(r.margin),
+      targetMargin: num(r.target_margin),
+      rival: r.cheapest_rival == null ? null : num(r.cheapest_rival),
+      share: r.buybox_share == null ? null : num(r.buybox_share),
+      stock: num(r.stock),
+      units: num(r.units_recent),
+      // null means it has never sold, which is worse than a big
+      // number and must not render as blank-therefore-fine.
+      daysIdle: r.days_idle == null ? null : num(r.days_idle),
+      lockedDays: r.locked_days == null ? 0 : num(r.locked_days),
+      reasoning: r.reasoning || "",
+      moving: num(r.target_price) !== num(r.price),
+    }))
+    .sort((a, b) => {
+      const ra = (RANK[a.action] ?? 3) + (a.lockedDays > 0 ? 1.5 : 0);
+      const rb = (RANK[b.action] ?? 3) + (b.lockedDays > 0 ? 1.5 : 0);
+      if (ra !== rb) return ra - rb;
+      return a.sku.localeCompare(b.sku);
+    });
+
+  const actions = {};
+  for (const r of board) actions[r.action] = (actions[r.action] || 0) + 1;
+
   return {
     id: trial.id,
     family: trial.family || "",
@@ -1012,6 +1051,8 @@ export function buildManagedPricing(experiments, changes, offers, now = Date.now
     notes: trial.notes || "",
     log,
     skus: bySku,
+    board,
+    actions,
     counts: {
       applied: applied.length,
       refused: log.filter((c) => !c.applied).length,

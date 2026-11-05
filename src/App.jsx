@@ -369,6 +369,13 @@ const emptyRow = (label, short) => ({
 // Stable zero-state used until the first load resolves. Module-level and
 // frozen so it keeps a single identity across renders — otherwise the
 // useMemo hooks that depend on it would recompute on every render.
+// Action chips on the managed pricing board. Cut and defend are the
+// moves that chase units, so they read as the active ones; blocked
+// means price cannot help this listing at all.
+const MANAGED_ORDER = ["cut", "defend", "raise", "hold", "blocked"];
+const MANAGED_WORD = { cut: "cut", defend: "defend", raise: "raise", hold: "holding", blocked: "blocked" };
+const MANAGED_TONE = { cut: "#f0b429", defend: "#f0b429", raise: "#34c759", hold: "#8e8e93", blocked: "#6b6b70" };
+
 const EMPTY_DATA = Object.freeze({
   rows: [
     emptyRow("Today", "Today"),
@@ -2975,11 +2982,13 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
               </div>
             </div>
 
-            {/* Managed pricing trial. Reads price_experiments and
-                price_changes; renders nothing at all when no trial is
-                running, which is the normal state. Every number here was
-                computed by takealot/price_policy.py — the app displays
-                the decision and its reasoning, it does not re-derive it. */}
+            {/* Managed pricing. Shows EVERY listing in the family, not
+                only the ones that moved: "we looked at this and chose not
+                to move it, for this reason" is a decision worth seeing,
+                and it is invisible in a change log by definition.
+                Every number and every sentence comes from
+                takealot/price_policy.py — the app displays the decision,
+                it never re-derives it. */}
             {M && (
               <div style={{ borderRadius: 14, border: "1px solid " + SO.border, backgroundColor: SO.surface, padding: 14, marginBottom: 20 }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
@@ -2988,40 +2997,57 @@ function SalesScreen({ isOwner = true, onLogout = () => {}, currentName = USER, 
                     <p style={{ fontSize: 16, fontWeight: 700, color: SO.text, margin: "3px 0 0", letterSpacing: "-0.2px", ...NUM }}>{M.family}</p>
                   </div>
                   <span style={{ fontSize: 11.5, color: SO.textFaint, ...NUM }}>
-                    {"R" + M.bandLow.toFixed(0) + " – R" + M.bandHigh.toFixed(0)}
+                    {"R" + M.bandLow.toFixed(0) + " \u2013 R" + M.bandHigh.toFixed(0)}
                   </span>
                 </div>
 
-                <p style={{ fontSize: 11.5, color: SO.textFaint, lineHeight: 1.5, margin: "0 0 12px" }}>
-                  {M.counts.applied} listing{M.counts.applied !== 1 ? "s" : ""} moved
-                  {M.counts.locked > 0 ? " · " + M.counts.locked + " holding a full cycle" : ""}
-                  {M.counts.refused > 0 ? " · " + M.counts.refused + " refused" : ""}
-                  {" · baseline " + M.baselineUnits + " units, " + rand(Math.round(M.baselineProfit)) + " over 4 weeks"}
+                <p style={{ fontSize: 11.5, color: SO.textFaint, lineHeight: 1.5, margin: "0 0 4px" }}>
+                  {M.board.length > 0
+                    ? M.board.length + " listings \u00B7 " +
+                      MANAGED_ORDER.filter((a) => M.actions[a])
+                        .map((a) => M.actions[a] + " " + MANAGED_WORD[a]).join(" \u00B7 ")
+                    : M.counts.applied + " changes so far \u2014 run the planner to fill the board"}
+                </p>
+                <p style={{ fontSize: 11, color: SO.textFainter, lineHeight: 1.5, margin: "0 0 12px" }}>
+                  {"Baseline " + M.baselineUnits + " units, " + rand(Math.round(M.baselineProfit)) + " over 4 weeks"}
                 </p>
 
-                {M.skus.slice(0, managedAll ? M.skus.length : 4).map((c) => (
-                  <div key={c.sku} style={{ borderTop: "1px solid " + SO.border, paddingTop: 9, marginTop: 9 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: SO.text, ...NUM }}>{c.sku}</span>
-                      <span style={{ fontSize: 12.5, color: SO.text, ...NUM }}>
-                        {"R" + c.from.toFixed(0) + " → R" + c.to.toFixed(0)}
-                        <span style={{ color: c.marginAfter >= c.marginBefore ? SO.green : SO.redLight, marginLeft: 7 }}>
-                          {(c.marginAfter >= c.marginBefore ? "+" : "") + rand(c.marginAfter - c.marginBefore) + "/unit"}
-                        </span>
+                {M.board.slice(0, managedAll ? M.board.length : 6).map((r) => (
+                  <div key={r.sku} style={{ borderTop: "1px solid " + SO.border, paddingTop: 9, marginTop: 9 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", padding: "2px 6px", borderRadius: 5, color: MANAGED_TONE[r.action] || SO.textFaint, border: "1px solid " + (MANAGED_TONE[r.action] || SO.border) + "55" }}>
+                        {MANAGED_WORD[r.action] || r.action}
+                      </span>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: SO.text, ...NUM }}>{r.sku}</span>
+                      <span style={{ marginLeft: "auto", fontSize: 12.5, color: SO.text, ...NUM }}>
+                        {r.moving
+                          ? "R" + r.price.toFixed(0) + " \u2192 R" + r.target.toFixed(0)
+                          : "R" + r.price.toFixed(0)}
+                        {r.moving && (
+                          <span style={{ color: r.targetMargin >= r.margin ? SO.green : SO.redLight, marginLeft: 7 }}>
+                            {(r.targetMargin >= r.margin ? "+" : "") + rand(r.targetMargin - r.margin)}
+                          </span>
+                        )}
                       </span>
                     </div>
-                    <p style={{ fontSize: 11, color: SO.textFaint, lineHeight: 1.45, margin: "4px 0 0" }}>{c.reasoning}</p>
-                    {c.lockLeft > 0 && (
+                    <p style={{ fontSize: 10.5, color: SO.textFainter, margin: "5px 0 0", ...NUM }}>
+                      {"box " + (r.share == null ? "\u2013" : Math.round(r.share * 100) + "%")
+                        + " \u00B7 rival " + (r.rival == null ? "none" : "R" + r.rival.toFixed(0))
+                        + " \u00B7 " + (r.daysIdle == null ? "never sold" : "sold " + r.daysIdle + "d ago")
+                        + " \u00B7 " + r.stock + " in stock"}
+                    </p>
+                    <p style={{ fontSize: 11, color: SO.textFaint, lineHeight: 1.45, margin: "4px 0 0" }}>{r.reasoning}</p>
+                    {r.lockedDays > 0 && (
                       <p style={{ fontSize: 10.5, color: SO.textFainter, margin: "4px 0 0", ...NUM }}>
-                        {"Held " + c.lockLeft + " more day" + (c.lockLeft !== 1 ? "s" : "") + " — a price needs a full payday cycle before its units mean anything"}
+                        {"Free to move in " + r.lockedDays + " day" + (r.lockedDays !== 1 ? "s" : "")}
                       </p>
                     )}
                   </div>
                 ))}
 
-                {M.skus.length > 4 && (
+                {M.board.length > 6 && (
                   <button onClick={() => setManagedAll((v) => !v)} style={{ marginTop: 11, padding: "6px 12px", borderRadius: 8, fontSize: 11.5, fontWeight: 600, border: "1px solid " + SO.border, backgroundColor: "transparent", color: SO.textFaint, cursor: "pointer", fontFamily: FONT }}>
-                    {managedAll ? "Show fewer" : "Show all " + M.skus.length}
+                    {managedAll ? "Show fewer" : "Show all " + M.board.length}
                   </button>
                 )}
               </div>

@@ -134,7 +134,7 @@ export async function loadStoreData(now = Date.now()) {
   const since = historyStart(now).toISOString();
 
   const [salesRes, offersRes, costsRes, targetsRes, coverageStart, historyRows, returnsRes, recsRes,
-    trialsRes, priceChangesRes] = await Promise.all([
+    trialsRes, priceChangesRes, pricePlanRes] = await Promise.all([
     fetchAllSales(since),
     supabase.from("offers_cache").select("*").order("sku"),
     supabase.from("sku_costs").select("sku, title, cost_incl_vat, cost_excl_vat, min_price, max_price"),
@@ -173,6 +173,10 @@ export async function loadStoreData(now = Date.now()) {
       .select("*")
       .order("created_at", { ascending: false })
       .limit(500),
+    // Where every managed listing stands right now — one row per SKU,
+    // regenerated each planning run. This is what lets the board show
+    // the whole family rather than only the listings that moved.
+    supabase.from("price_plan").select("*").eq("is_current", true),
   ]);
 
   const errors = {};
@@ -194,6 +198,7 @@ export async function loadStoreData(now = Date.now()) {
   // render, which is also the right behaviour when no trial is running.
   if (trialsRes.error) errors.managed = trialsRes.error.message;
   else if (priceChangesRes.error) errors.managed = priceChangesRes.error.message;
+  else if (pricePlanRes.error) errors.managed = pricePlanRes.error.message;
 
   const rawSales = prepareSales(salesRes.data || []);
 
@@ -238,7 +243,8 @@ export async function loadStoreData(now = Date.now()) {
     lastSync: lastSync ? new Date(lastSync).getTime() : null,
     recommendations: buildRecommendations(recsRes.data || []),
     managed: buildManagedPricing(
-      trialsRes.data || [], priceChangesRes.data || [], offers, now
+      trialsRes.data || [], priceChangesRes.data || [],
+      pricePlanRes.data || [], offers, now
     ),
     counts: { sales: rawSales.length, offers: offers.length, costs: costsBySku.size },
     // True when the sync has genuinely never populated anything — the
